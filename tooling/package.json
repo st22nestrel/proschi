@@ -42,7 +42,7 @@
     "package:vscode": "node build.mjs && cd vscode && vsce package --no-dependencies -o ../dist/proschi.vsix"
   },
   "devDependencies": {
-    "@types/node": "^24.19.1",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/vscode": "~1.91.0",
