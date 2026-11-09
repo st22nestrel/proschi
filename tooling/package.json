@@ -1,11 +1,11 @@
 {
   "name": "proschi",
-  "version": "0.16.1",
+  "version": "0.16.1-themes.1",
   "description": "Command-line checker and language server for Proschi architecture diagrams",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gvart/proschi.git",
+    "url": "https://github.com/st22nestrel/proschi.git",
     "directory": "tooling"
   },
   "homepage": "https://proschi.app/",
