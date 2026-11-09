@@ -104,6 +104,30 @@ describe('proschi render', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it.each(exampleFiles.map((e) => [e.id, e]))('renders %s as a preview page with a scenario picker', async (_id, example) => {
+    const out = join(dir, 'preview', example.id);
+    const r = await capture(['render', example.file, '--out', out, '--format', 'preview-html']);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(join(out, `${example.id}.preview.html`));
+    const { diagram } = parse(example.source);
+    const slugs = diagram.useCases.flatMap((uc) => uc.scenarios.map((s) => `${uc.id}--${s.id}`));
+
+    const html = readFileSync(join(out, `${example.id}.preview.html`), 'utf8');
+    expect(html.startsWith('<!doctype html>')).toBe(true);
+    expect(html).toContain('<details open><summary>Architecture</summary>');
+    expect(html.match(/<svg [^>]*font-family=/g)).toHaveLength(1 + slugs.length);
+    for (const slug of slugs) {
+      expect(html).toContain(`<option value="${slug}">`);
+      expect(html).toContain(`data-slug="${slug}"`);
+    }
+    // Only the first scenario shows before the script runs.
+    expect(html.match(/class="scenario" data-slug="[^"]+" hidden>/g) ?? []).toHaveLength(Math.max(0, slugs.length - 1));
+    expect(html).not.toMatch(/<link|https?:\/\/(?!www\.w3\.org)/);
+    expect(html.match(/<script>/g)).toHaveLength(1);
+    const ids = [...html.matchAll(/<marker id="([^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it.each(exampleFiles.map((e) => [e.id, e]))('renders %s as an HLD in Markdown and HTML', async (_id, example) => {
     const out = join(dir, 'hld', example.id);
     const md = await capture(['render', example.file, '--out', out, '--format', 'hld-md']);

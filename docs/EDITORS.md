@@ -381,6 +381,7 @@ this browser. The Mermaid flowchart keeps the diagram's
 proschi render shop.proschi --out docs/diagrams              # SVG (default)
 proschi render shop.proschi --out docs --format md           # docs/shop.md
 proschi render shop.proschi --out site --format html         # site/shop.html
+proschi render shop.proschi --out site --format preview-html # site/shop.preview.html
 ```
 
 | Format | Output |
@@ -388,6 +389,7 @@ proschi render shop.proschi --out site --format html         # site/shop.html
 | `svg` | `architecture.svg` and a `<usecase>--<scenario>.svg` sequence diagram per scenario |
 | `md` | `<file>.md`: a Mermaid architecture block and a Mermaid sequence block per scenario |
 | `html` | `<file>.html`: one self-contained page with every SVG |
+| `preview-html` | `<file>.preview.html`: the editor preview as a page, with a foldable architecture and a scenario picker |
 | `hld-md` | `<file>.hld.md`: the [HLD document](#hld-documents) with Mermaid diagrams |
 | `hld-html` | `<file>.hld.html`: the same document as one page with every SVG |
 

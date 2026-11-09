@@ -24,6 +24,11 @@ nearest `proschi.json`. The flag overrides the config. The themes are token
 sets in `src/render/theme.ts`, which the architecture and sequence renderers
 read. Without a theme, the output is byte-for-byte upstream's.
 
+It also adds `proschi render --format preview-html`: `<file>.preview.html`,
+the VS Code preview as a standalone page. The architecture sits in a
+foldable `<details>`, and a picker shows one scenario at a time (kept in the
+URL hash). The page's only script is allowed by its CSP hash.
+
 ## Cut a fork release
 
 1. Bump `version` in `tooling/package.json` (and the two matching entries at

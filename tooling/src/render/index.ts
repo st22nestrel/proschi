@@ -1,9 +1,12 @@
 /**
  * `proschi render`: a document as static files. `svg` writes the architecture
  * and one sequence diagram per scenario, `md` one Markdown file with Mermaid
- * blocks (GitHub renders them), `html` one self-contained page with the SVGs.
- * `hld-md` and `hld-html` write the high-level design document instead.
+ * blocks (GitHub renders them), `html` one self-contained page with the SVGs,
+ * `preview-html` one page like the VS Code preview (a foldable architecture
+ * and a scenario picker). `hld-md` and `hld-html` write the high-level design
+ * document instead.
  */
+import { createHash } from 'node:crypto';
 import { EXPORT_CSP, toMermaidArchitecture, toMermaidSequence, type Diagram, type DiagramScenario, type DiagramUseCase } from '../proschi';
 import { renderArchitectureSvg, type ArchitectureOptions } from './architecture';
 import { renderSequenceSvg, scenarioTitle } from './sequence';
@@ -15,7 +18,7 @@ export { renderArchitectureSvg } from './architecture';
 export { renderSequenceSvg, scenarioTitle } from './sequence';
 export { DEFAULT_THEME, THEME_NAMES, getTheme, isThemeName, type RenderTheme, type ThemeName } from './theme';
 
-export const FORMATS = ['svg', 'md', 'html', 'hld-md', 'hld-html'] as const;
+export const FORMATS = ['svg', 'md', 'html', 'preview-html', 'hld-md', 'hld-html'] as const;
 export type RenderFormat = (typeof FORMATS)[number];
 
 export interface RenderedFile {
@@ -141,10 +144,95 @@ export function renderHtml(diagram: Diagram, rendered: RenderedDiagram, theme: R
   ].join('\n');
 }
 
+const previewStyle = (th: RenderTheme) => `${pageStyle(th)}
+.content { max-width: none; }
+details { margin-bottom: 24px; }
+summary { cursor: pointer; font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+.picker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 14px; }
+.picker select { font: inherit; padding: 2px 4px; max-width: 100%; }
+.picker .count { color: var(--muted); font-size: 13px; }
+[hidden] { display: none !important; }
+`;
+
+// Shows the picked scenario, kept in the URL hash so a link (or a reload) opens it.
+const PREVIEW_SCRIPT = `
+const select = document.getElementById('scenario');
+if (select) {
+  const figures = document.querySelectorAll('.scenario');
+  const show = (slug) => figures.forEach((el) => { el.hidden = el.dataset.slug !== slug; });
+  const fromHash = () => {
+    const slug = decodeURIComponent(location.hash.slice(1));
+    if (Array.from(select.options).some((o) => o.value === slug)) select.value = slug;
+    show(select.value);
+  };
+  select.addEventListener('change', () => {
+    history.replaceState(null, '', '#' + encodeURIComponent(select.value));
+    show(select.value);
+  });
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
+}
+`;
+
+const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).digest('base64')}'`;
+
+/**
+ * The page like the VS Code preview: the architecture in a `<details>` (open,
+ * fold it to save room) and one scenario at a time, picked from a list. Its
+ * CSP allows only its own style and script, by hash, so nothing from the
+ * document can run; without scripts the first scenario still shows.
+ */
+export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH): string {
+  const title = diagram.title ?? 'Architecture';
+  const style = previewStyle(theme);
+  const csp = [`default-src 'none'`, `img-src data:`, `style-src ${cspHash(style)}`, `script-src ${cspHash(PREVIEW_SCRIPT)}`, `base-uri 'none'`, `form-action 'none'`].join('; ');
+  const body = [`<details open><summary>Architecture</summary><figure>${rendered.architecture}</figure></details>`];
+  if (rendered.scenarios.length) {
+    const groups = diagram.useCases
+      .map((uc) => {
+        const options = rendered.scenarios
+          .filter((s) => s.useCase === uc)
+          .map((s) => `<option value="${esc(s.slug)}">${esc(uc.scenarios.length > 1 ? s.scenario.name : uc.name)}${s.scenario.outcome === 'error' ? ' (error)' : ''}</option>`)
+          .join('');
+        return `<optgroup label="${esc(uc.name)}">${options}</optgroup>`;
+      })
+      .join('');
+    const count = `${rendered.scenarios.length} scenario${rendered.scenarios.length === 1 ? '' : 's'}`;
+    body.push(
+      `<section><label class="picker">Scenario <select id="scenario">${groups}</select><span class="count">${count}</span></label>`,
+      ...rendered.scenarios.map((s, i) => `<figure class="scenario" data-slug="${esc(s.slug)}"${i ? ' hidden' : ''}>${s.svg}</figure>`),
+      '</section>',
+    );
+  } else {
+    body.push('<p class="about">No use cases: add a <code>usecase</code> to see its sequence diagrams here.</p>');
+  }
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    `<title>${esc(title)}</title>`,
+    `<style>${style}</style>`,
+    '</head>',
+    '<body>',
+    `<header><h1>${esc(title)}</h1></header>`,
+    '<main><div class="content">',
+    ...body,
+    '</div></main>',
+    `<script>${PREVIEW_SCRIPT}</script>`,
+    '</body>',
+    '</html>',
+    '',
+  ].join('\n');
+}
+
 /** The files `proschi render` writes for `format`; `baseName` names the single md/html file. */
 export async function renderFiles(diagram: Diagram, format: RenderFormat, baseName: string, options: ArchitectureOptions = {}): Promise<RenderedFile[]> {
   if (format === 'md') return [{ name: `${baseName}.md`, content: renderMarkdown(diagram) }];
   if (format === 'html') return [{ name: `${baseName}.html`, content: renderHtml(diagram, await renderSvgs(diagram, true, options), options.theme) }];
+  if (format === 'preview-html') return [{ name: `${baseName}.preview.html`, content: renderPreviewHtml(diagram, await renderSvgs(diagram, true, options), options.theme) }];
   if (format === 'hld-md') return [{ name: `${baseName}.hld.md`, content: renderHldMarkdown(diagram) }];
   if (format === 'hld-html') return [{ name: `${baseName}.hld.html`, content: renderHldHtml(diagram, await renderSvgs(diagram, true, options)) }];
   const { architecture, scenarios } = await renderSvgs(diagram, false, options);

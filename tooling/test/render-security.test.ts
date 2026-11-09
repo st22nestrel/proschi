@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXPORT_CSP, parse } from '../src/proschi';
-import { renderHtml, renderSvgs } from '../src/render';
+import { createHash } from 'node:crypto';
+import { renderHtml, renderPreviewHtml, renderSvgs } from '../src/render';
 import { renderHldHtml } from '../src/render/hld';
 import { renderPreviewContent } from '../src/render/preview';
 
@@ -39,6 +40,24 @@ describe('rendering hostile documents', () => {
     }
     expect(EXPORT_CSP).toContain("default-src 'none'");
     expect(EXPORT_CSP).not.toContain('script-src');
+  });
+
+  it('allows only the preview page\'s own script and style, by hash', async () => {
+    const { diagram } = parse(HOSTILE);
+    const html = renderPreviewHtml(diagram, await renderSvgs(diagram, true));
+    const csp = html.match(/<meta http-equiv="Content-Security-Policy" content="([^"]+)">/)?.[1] ?? '';
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).not.toMatch(/unsafe-inline|unsafe-eval|nonce-/);
+    const hash = (code: string) => `'sha256-${createHash('sha256').update(code).digest('base64')}'`;
+    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+    expect(scripts).toHaveLength(1);
+    expect(csp).toContain(`script-src ${hash(scripts[0])}`);
+    const style = html.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '';
+    expect(csp).toContain(`style-src ${hash(style)}`);
+    // The document's names never become markup, scripts or images.
+    const outside = html.replace(/<script>[\s\S]*?<\/script>/, '');
+    expect(outside).not.toMatch(/<(script|img|b)\b/i);
+    expect(outside).toContain('&lt;b&gt;Use&lt;/b&gt;');
   });
 
   it('escapes the preview panel, including error messages', async () => {

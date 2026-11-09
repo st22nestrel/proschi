@@ -126,6 +126,15 @@ describe('render themes', () => {
     expect(sketch.read('main.html')).toContain('--card: #fff8e7');
   });
 
+  it('styles the preview page with the theme', async () => {
+    const dir = project();
+    const classic = await renderIn(dir, ['--format', 'preview-html', '--theme', 'classic']);
+    expect(classic.code).toBe(0);
+    const html = classic.read('main.preview.html');
+    expect(html).toContain('--card: #ffffff');
+    expect(html).toMatch(/r="8" fill="#3b82f6"\/>/);
+  });
+
   it('uses sketch without a flag or proschi.json', async () => {
     const r = await renderIn(project());
     expect(r.code).toBe(0);
