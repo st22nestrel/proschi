@@ -1,12 +1,15 @@
 import { buildSequence, type Diagram, type DiagramScenario, type DiagramUseCase, type SequenceMessage } from '../proschi';
-import { techIcon } from './icons';
-import { COLORS, MONO, card, esc, fit, marker, r, svgDocument, text, textWidth } from './svg';
+import { techIcon, typeColor } from './icons';
+import { card, esc, fit, marker, r, svgDocument, text, textWidth } from './svg';
+import { SKETCH, type RenderTheme } from './theme';
 
 /**
  * One scenario as an SVG sequence diagram: a header box and dashed lifeline
  * per participant, numbered request arrows, dashed responses with their
  * status codes, `par` regions, and error replies and failed calls in red,
- * in the canvas's style: ink cards with hard shadows, pink step numbers.
+ * in the render theme's style (theme.ts): `sketch`, the canvas's ink cards
+ * with hard shadows and pink step numbers, or `classic`, rounded grey cards
+ * with type-coloured icon tiles and blue requests and step numbers.
  */
 
 const MARGIN = 24;
@@ -33,7 +36,9 @@ export function scenarioTitle(useCase: DiagramUseCase, scenario: DiagramScenario
   return useCase.scenarios.length > 1 ? `${useCase.name} › ${scenario.name}` : useCase.name;
 }
 
-export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, scenario: DiagramScenario, idPrefix = ''): string {
+export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, scenario: DiagramScenario, idPrefix = '', theme: RenderTheme = SKETCH): string {
+  const th = theme;
+  const C = th.colors;
   const seq = buildSequence(useCase, scenario, diagram.nodes);
   const participants = seq.participants;
   const index = new Map(participants.map((p, i) => [p.id, i]));
@@ -103,8 +108,8 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
   const height = bottom + MARGIN;
 
   const body: string[] = [
-    text(MARGIN, MARGIN + 16, title, { size: 16, weight: 700 }),
-    subtitle.length ? text(MARGIN, MARGIN + 36, subtitle.join(' · '), { size: 12, fill: scenario.outcome === 'error' ? COLORS.error : COLORS.muted }) : '',
+    text(MARGIN, MARGIN + 16, title, { size: 16, weight: th.bold, fill: C.text }),
+    subtitle.length ? text(MARGIN, MARGIN + 36, subtitle.join(' · '), { size: 12, fill: scenario.outcome === 'error' ? C.error : C.muted }) : '',
   ];
 
   // par regions behind everything else.
@@ -112,14 +117,14 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
   for (const row of rows) {
     if (row.kind === 'par-start') parTop = row.y;
     if (row.kind === 'par-and') {
-      body.push(`<line x1="${MARGIN / 2}" y1="${r(row.y)}" x2="${r(width - MARGIN / 2)}" y2="${r(row.y)}" stroke="${COLORS.par}" stroke-width="1" stroke-dasharray="4 3"/>`);
+      body.push(`<line x1="${MARGIN / 2}" y1="${r(row.y)}" x2="${r(width - MARGIN / 2)}" y2="${r(row.y)}" stroke="${C.par}" stroke-width="1" stroke-dasharray="4 3"/>`);
     }
     if (row.kind === 'par-end') {
       body.push(
         `<g data-kind="par">`,
-        `<rect x="${MARGIN / 2}" y="${r(parTop)}" width="${r(width - MARGIN)}" height="${r(row.y - parTop)}" rx="4" fill="${COLORS.par}" fill-opacity="0.04" stroke="${COLORS.par}" stroke-width="1"/>`,
-        `<path d="M${MARGIN / 2},${r(parTop + 18)} H${MARGIN / 2 + 30} L${MARGIN / 2 + 36},${r(parTop + 12)} V${r(parTop)}" fill="none" stroke="${COLORS.par}" stroke-width="1"/>`,
-        text(MARGIN / 2 + 6, parTop + 13, 'par', { size: 11, weight: 600, fill: COLORS.par }),
+        `<rect x="${MARGIN / 2}" y="${r(parTop)}" width="${r(width - MARGIN)}" height="${r(row.y - parTop)}" rx="4" fill="${C.par}" fill-opacity="0.04" stroke="${C.par}" stroke-width="1"/>`,
+        `<path d="M${MARGIN / 2},${r(parTop + 18)} H${MARGIN / 2 + 30} L${MARGIN / 2 + 36},${r(parTop + 12)} V${r(parTop)}" fill="none" stroke="${C.par}" stroke-width="1"/>`,
+        text(MARGIN / 2 + 6, parTop + 13, 'par', { size: 11, weight: 600, fill: C.par }),
         '</g>',
       );
     }
@@ -132,36 +137,45 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
     const node = p.tech ? nodes.get(p.id) : undefined;
     body.push(
       `<g data-participant="${esc(p.id)}">`,
-      `<line x1="${r(x)}" y1="${r(headerTop + HEADER_HEIGHT)}" x2="${r(x)}" y2="${r(bottom)}" stroke="${COLORS.muted}" stroke-opacity="0.6" stroke-width="1.5" stroke-dasharray="5 4"/>`,
+      `<line x1="${r(x)}" y1="${r(headerTop + HEADER_HEIGHT)}" x2="${r(x)}" y2="${r(bottom)}" stroke="${C.lifeline}"${C.lifelineOpacity !== undefined ? ` stroke-opacity="${C.lifelineOpacity}"` : ''} stroke-width="1.5" stroke-dasharray="5 4"/>`,
       // A small ComponentNode: card, icon tile, name and tech stack.
-      card(x - w / 2, headerTop, w, HEADER_HEIGHT, { stroke: 2 }),
-      node ? `<rect x="${r(x - w / 2 + 10)}" y="${r(headerTop + 11)}" width="24" height="24" rx="4" fill="${COLORS.background}" stroke="${COLORS.border}" stroke-width="1.5"/>` : '',
-      node ? techIcon(node.techStack, x - w / 2 + 15, headerTop + 16, 14, COLORS.text, node.type) : '',
-      text(x - w / 2 + (node ? 42 : 12), headerTop + (p.tech ? 20 : 28), fit(p.name, w - (node ? 50 : 20), 13, true), { size: 13, weight: 700 }),
-      p.tech ? text(x - w / 2 + 42, headerTop + 36, fit(p.tech, w - 50, 11), { size: 10, weight: 500, fill: COLORS.muted, family: MONO }) : '',
+      card(x - w / 2, headerTop, w, HEADER_HEIGHT, { stroke: 2, theme: th }),
+      node
+        ? th.iconTile === 'filled'
+          ? `<rect x="${r(x - w / 2 + 10)}" y="${r(headerTop + 11)}" width="24" height="24" rx="4" fill="${typeColor(node.type)}"/>`
+          : `<rect x="${r(x - w / 2 + 10)}" y="${r(headerTop + 11)}" width="24" height="24" rx="4" fill="${C.background}" stroke="${C.border}" stroke-width="1.5"/>`
+        : '',
+      node ? techIcon(node.techStack, x - w / 2 + 15, headerTop + 16, 14, th.iconTile === 'filled' ? '#ffffff' : C.text, node.type) : '',
+      text(x - w / 2 + (node ? 42 : 12), headerTop + (p.tech ? 20 : 28), fit(p.name, w - (node ? 50 : 20), 13, true), { size: 13, weight: th.bold, fill: C.text }),
+      p.tech
+        ? th.mono
+          ? text(x - w / 2 + 42, headerTop + 36, fit(p.tech, w - 50, 11), { size: 10, weight: 500, fill: C.muted, family: th.mono })
+          : text(x - w / 2 + 42, headerTop + 36, fit(p.tech, w - 50, 11), { size: 11, fill: C.muted })
+        : '',
       '</g>',
     );
   });
 
-  if (messages.length === 0) body.push(text(MARGIN, headerTop + 16, 'No steps', { fill: COLORS.muted }));
+  if (messages.length === 0) body.push(text(MARGIN, headerTop + 16, 'No steps', { fill: C.muted }));
   for (const row of rows) {
     if (row.kind !== 'message') continue;
-    body.push(drawMessage(row.message, xs[index.get(row.message.from)!], xs[index.get(row.message.to)!], row.y, idPrefix));
+    body.push(drawMessage(row.message, xs[index.get(row.message.from)!], xs[index.get(row.message.to)!], row.y, idPrefix, th));
   }
 
   const defs = [
-    marker(`${idPrefix}solid`, COLORS.text),
-    marker(`${idPrefix}open`, COLORS.text, true),
-    marker(`${idPrefix}reply`, COLORS.line, true),
-    marker(`${idPrefix}solid-error`, COLORS.error),
-    marker(`${idPrefix}open-error`, COLORS.error, true),
+    marker(`${idPrefix}solid`, C.request),
+    marker(`${idPrefix}open`, C.request, true),
+    marker(`${idPrefix}reply`, C.line, true),
+    marker(`${idPrefix}solid-error`, C.error),
+    marker(`${idPrefix}open-error`, C.error, true),
   ].join('');
-  return svgDocument(width, height, title, body.filter(Boolean), defs);
+  return svgDocument(width, height, title, body.filter(Boolean), defs, th);
 }
 
-function drawMessage(m: SequenceMessage, x1: number, x2: number, y: number, idPrefix: string): string {
-  // Requests in ink, replies grey and dashed, errors red.
-  const color = m.error ? COLORS.error : m.kind === 'response' ? COLORS.line : COLORS.text;
+function drawMessage(m: SequenceMessage, x1: number, x2: number, y: number, idPrefix: string, th: RenderTheme): string {
+  const C = th.colors;
+  // Requests in ink (sketch) or blue (classic), replies grey and dashed, errors red.
+  const color = m.error ? C.error : m.kind === 'response' ? C.line : C.request;
   const dash = m.kind === 'response' ? ' stroke-dasharray="6 4"' : '';
   const head = m.error ? `${m.kind === 'response' || m.async ? 'open' : 'solid'}-error` : m.kind === 'response' ? 'reply' : m.async ? 'open' : 'solid';
   const label = labelText(m);
@@ -179,31 +193,31 @@ function drawMessage(m: SequenceMessage, x1: number, x2: number, y: number, idPr
     let tx = startX;
     if (m.kind === 'request') {
       out.push(
-        `<circle cx="${r(tx + 8)}" cy="${r(ly - 4)}" r="8" fill="${m.error ? COLORS.error : COLORS.active}" stroke="${COLORS.border}" stroke-width="1.5"/>`,
-        text(tx + 8, ly - 0.5, String(m.number), { size: 10, weight: 700, anchor: 'middle' }),
+        `<circle cx="${r(tx + 8)}" cy="${r(ly - 4)}" r="8" fill="${m.error ? C.error : C.active}"${C.stepStroke ? ` stroke="${C.stepStroke}" stroke-width="1.5"` : ''}/>`,
+        text(tx + 8, ly - 0.5, String(m.number), { size: 10, weight: 700, fill: C.stepText, anchor: 'middle' }),
       );
       tx += 22;
     }
     if (label.trim()) {
-      out.push(`<text x="${r(tx)}" y="${r(ly)}" font-size="${LABEL_SIZE}" fill="${m.error ? COLORS.error : COLORS.text}">${labelContent(label)}</text>`);
+      out.push(`<text x="${r(tx)}" y="${r(ly)}" font-size="${LABEL_SIZE}" fill="${m.error ? C.error : C.text}">${labelContent(label)}</text>`);
     }
   };
 
   if (x1 === x2) {
     // A call to itself: a small loop to the right of the lifeline.
     const d = `M${r(x1)},${r(y)} H${r(x1 + 36)} V${r(y + 18)} H${r(x1 + 2)}`;
-    out.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="2"${dash} marker-end="url(#${idPrefix}${head})"/>`);
+    out.push(`<path d="${d}" fill="none" stroke="${color}" stroke-width="${th.stroke}"${dash} marker-end="url(#${idPrefix}${head})"/>`);
     drawLabel(x1 + 44, y + 13);
   } else {
     const dir = Math.sign(x2 - x1);
     const end = m.failed ? x2 - dir * 14 : x2 - dir * 2;
     out.push(
-      `<line x1="${r(x1)}" y1="${r(y)}" x2="${r(end)}" y2="${r(y)}" stroke="${color}" stroke-width="2"${dash}${m.failed ? '' : ` marker-end="url(#${idPrefix}${head})"`}/>`,
+      `<line x1="${r(x1)}" y1="${r(y)}" x2="${r(end)}" y2="${r(y)}" stroke="${color}" stroke-width="${th.stroke}"${dash}${m.failed ? '' : ` marker-end="url(#${idPrefix}${head})"`}/>`,
     );
     if (m.failed) {
       // ✕: the request never arrives.
       const cx = end + dir * 6;
-      out.push(`<path d="M${r(cx - 5)},${r(y - 5)} L${r(cx + 5)},${r(y + 5)} M${r(cx - 5)},${r(y + 5)} L${r(cx + 5)},${r(y - 5)}" stroke="${COLORS.error}" stroke-width="2.2" stroke-linecap="round"/>`);
+      out.push(`<path d="M${r(cx - 5)},${r(y - 5)} L${r(cx + 5)},${r(y + 5)} M${r(cx - 5)},${r(y + 5)} L${r(cx + 5)},${r(y - 5)}" stroke="${C.error}" stroke-width="2.2" stroke-linecap="round"/>`);
     }
     drawLabel((x1 + x2) / 2 - labelWidth / 2, y - 8);
   }

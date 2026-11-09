@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { getTechStackIcon } from '../../../frontend/src/utils/iconMapping';
+import { getComponentTypeColor, getTechStackIcon } from '../../../frontend/src/utils/iconMapping';
+import { TAILWIND_HEX } from '../../../frontend/src/utils/canvasColors';
 import type { DiagramNode } from '../proschi';
 
 /**
@@ -28,4 +29,9 @@ export function techIcon(techStack: string, x: number, y: number, size: number, 
     markup.set(key, svg);
   }
   return svg.replace('ICON_ATTRS', `x="${x}" y="${y}" width="${size}" height="${size}" color="${color}"`);
+}
+
+/** The classic theme's icon tile colour for a component type (`getComponentTypeColor()` as hex). */
+export function typeColor(type: DiagramNode['type']): string {
+  return TAILWIND_HEX[getComponentTypeColor(type)] ?? TAILWIND_HEX['bg-gray-500'];
 }

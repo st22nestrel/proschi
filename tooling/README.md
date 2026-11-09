@@ -83,7 +83,7 @@ with `--json` for scripts. They only read the account. `--base <url>` points
 ## Rendering
 
 ```
-proschi render [--out <dir>] [--format svg|md|html|hld-md|hld-html] <file>
+proschi render [--out <dir>] [--format svg|md|html|hld-md|hld-html] [--theme sketch|classic] <file>
 ```
 
 - `svg` (default): `architecture.svg`, plus `<usecase>--<scenario>.svg` with a
@@ -99,6 +99,19 @@ files is not rendered (the errors are printed, exit code 1); warnings don't
 stop it. The SVGs are self-contained, with a white background, and look like
 the web editor's canvas (same layout, cards and icons). The renderer is a
 separate bundle (`dist/render.cjs`), loaded only by `proschi render`.
+
+`--theme` picks the look of the SVGs (and of the `html` / `hld-html` pages
+that embed them):
+
+- `sketch` (default): the canvas look, with cream paper, ink outlines, hard
+  shadows and pink step numbers
+- `classic`: the earlier look, with a white background, rounded light-grey
+  cards, icon tiles coloured by component type, blue request arrows and step
+  numbers, and grey dashed lifelines
+
+Without the flag, the `"theme"` key of the nearest `proschi.json` applies
+(`{"theme": "classic"}`), so a repository sets it once; the flag overrides
+it. An unknown theme is refused with exit code 2.
 
 Also in this package:
 

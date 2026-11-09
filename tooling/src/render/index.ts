@@ -9,9 +9,11 @@ import { renderArchitectureSvg, type ArchitectureOptions } from './architecture'
 import { renderSequenceSvg, scenarioTitle } from './sequence';
 import { renderHldHtml, renderHldMarkdown } from './hld';
 import { esc } from './svg';
+import { SKETCH, type RenderTheme } from './theme';
 
 export { renderArchitectureSvg } from './architecture';
 export { renderSequenceSvg, scenarioTitle } from './sequence';
+export { DEFAULT_THEME, THEME_NAMES, getTheme, isThemeName, type RenderTheme, type ThemeName } from './theme';
 
 export const FORMATS = ['svg', 'md', 'html', 'hld-md', 'hld-html'] as const;
 export type RenderFormat = (typeof FORMATS)[number];
@@ -41,7 +43,8 @@ export function scenarioSlug(useCase: DiagramUseCase, scenario: DiagramScenario)
 
 /**
  * Every SVG of a diagram. With `inline`, ids inside each SVG get a unique
- * prefix so several can share one HTML page.
+ * prefix so several can share one HTML page. `options.theme` (default sketch)
+ * styles the architecture and every sequence diagram.
  */
 export async function renderSvgs(diagram: Diagram, inline = false, options: ArchitectureOptions = {}): Promise<RenderedDiagram> {
   const architecture = await renderArchitectureSvg(diagram, options);
@@ -52,7 +55,7 @@ export async function renderSvgs(diagram: Diagram, inline = false, options: Arch
       scenario,
       title: scenarioTitle(useCase, scenario),
       slug: scenarioSlug(useCase, scenario),
-      svg: renderSequenceSvg(diagram, useCase, scenario, inline ? `s${++n}-` : ''),
+      svg: renderSequenceSvg(diagram, useCase, scenario, inline ? `s${++n}-` : '', options.theme),
     })),
   );
   return { architecture, scenarios };
@@ -74,9 +77,9 @@ export function renderMarkdown(diagram: Diagram): string {
   return out.join('\n');
 }
 
-const PAGE_STYLE = `
-:root { color-scheme: light dark; --bg: #ffffff; --fg: #111111; --muted: #5b5b5b; --card: #fff8e7; --border: #111111; --link: #111111; --error: #ff3b30; }
-@media (prefers-color-scheme: dark) { :root { --bg: #141318; --fg: #f4efe3; --muted: #a9a5b4; --card: #fff8e7; --border: #f4efe3; --link: #f4efe3; --error: #ff6b61; } }
+const pageStyle = (th: RenderTheme) => `
+:root { color-scheme: light dark; ${th.page.light} }
+@media (prefers-color-scheme: dark) { :root { ${th.page.dark} } }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--fg); }
 header { padding: 20px 24px 8px; }
@@ -93,12 +96,12 @@ nav .error, h2 .error { color: var(--error); }
 section { margin-bottom: 24px; }
 h2 { font-size: 16px; margin: 0 0 8px; }
 .about { color: var(--muted); font-size: 13px; margin: -4px 0 8px; }
-figure { margin: 0; overflow-x: auto; background: var(--card); border: 2px solid var(--border); border-radius: 4px; box-shadow: 3px 3px 0 var(--border); }
+figure { margin: 0; overflow-x: auto; ${th.page.figure} }
 figure svg { display: block; max-width: none; }
 @media (max-width: 760px) { main { flex-direction: column; } nav { position: static; flex: none; } }
 `;
 
-export function renderHtml(diagram: Diagram, rendered: RenderedDiagram): string {
+export function renderHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH): string {
   const title = diagram.title ?? 'Architecture';
   const nav: string[] = ['<li><a href="#architecture">Architecture</a></li>'];
   const sections: string[] = [`<section id="architecture"><h2>Architecture</h2><figure>${rendered.architecture}</figure></section>`];
@@ -125,7 +128,7 @@ export function renderHtml(diagram: Diagram, rendered: RenderedDiagram): string 
     `<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">`,
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${esc(title)}</title>`,
-    `<style>${PAGE_STYLE}</style>`,
+    `<style>${pageStyle(theme)}</style>`,
     '</head>',
     '<body>',
     `<header><h1>${esc(title)}</h1></header>`,
@@ -141,7 +144,7 @@ export function renderHtml(diagram: Diagram, rendered: RenderedDiagram): string 
 /** The files `proschi render` writes for `format`; `baseName` names the single md/html file. */
 export async function renderFiles(diagram: Diagram, format: RenderFormat, baseName: string, options: ArchitectureOptions = {}): Promise<RenderedFile[]> {
   if (format === 'md') return [{ name: `${baseName}.md`, content: renderMarkdown(diagram) }];
-  if (format === 'html') return [{ name: `${baseName}.html`, content: renderHtml(diagram, await renderSvgs(diagram, true, options)) }];
+  if (format === 'html') return [{ name: `${baseName}.html`, content: renderHtml(diagram, await renderSvgs(diagram, true, options), options.theme) }];
   if (format === 'hld-md') return [{ name: `${baseName}.hld.md`, content: renderHldMarkdown(diagram) }];
   if (format === 'hld-html') return [{ name: `${baseName}.hld.html`, content: renderHldHtml(diagram, await renderSvgs(diagram, true, options)) }];
   const { architecture, scenarios } = await renderSvgs(diagram, false, options);

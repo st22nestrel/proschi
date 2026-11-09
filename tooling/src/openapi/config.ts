@@ -12,6 +12,8 @@ export const CONFIG_FILE = 'proschi.json';
 export interface Config {
   file: string;
   openapi: SpecMap;
+  /** `proschi render`'s default theme (render/theme.ts); checked by the render command. */
+  theme?: string;
 }
 
 /** The nearest proschi.json at or above a directory, if any. */
@@ -47,8 +49,13 @@ export function readConfig(file: string): Config {
   if (typeof openapi !== 'object' || openapi === null || Array.isArray(openapi) || Object.values(openapi).some((v) => typeof v !== 'string')) {
     throw new Error(`Invalid ${file}: "openapi" must map node ids to spec paths, e.g. {"openapi": {"orders": "specs/orders.yaml"}}`);
   }
+  const theme = (json as { theme?: unknown })?.theme;
+  if (theme !== undefined && typeof theme !== 'string') {
+    throw new Error(`Invalid ${file}: "theme" must be a theme name, e.g. {"theme": "classic"}`);
+  }
   const config: Config = {
     file,
+    ...(theme !== undefined ? { theme } : {}),
     openapi: Object.fromEntries(Object.entries(openapi as Record<string, string>).map(([id, path]) => [id, resolve(dirname(file), path)])),
   };
   configs.set(file, { mtimeMs, config });

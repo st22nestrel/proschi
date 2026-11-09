@@ -5,7 +5,8 @@
  * under a strict Content-Security-Policy.
  */
 
-import { CANVAS_FONT, CANVAS_TOKENS } from '../../../frontend/src/utils/canvasColors';
+import { CANVAS_FONT } from '../../../frontend/src/utils/canvasColors';
+import { SKETCH, type RenderTheme } from './theme';
 
 /** The editor's font stack (Tailwind's `font-sans`). */
 export const FONT = CANVAS_FONT;
@@ -13,35 +14,35 @@ export const FONT = CANVAS_FONT;
 /** The canvas's monospace font (`--font-mono`), for tech stacks and edge labels. */
 export const MONO = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 
-const T = CANVAS_TOKENS.light;
+/** The default (sketch) theme's colours: paper background, white cards, ink borders; `active` and `error` are what use case playback highlights with. */
+export const COLORS = SKETCH.colors;
 
-/** The canvas's design tokens (light): paper background, white cards, ink borders; `active` and `error` are what use case playback highlights with. */
-export const COLORS = {
-  background: T.paper,
-  surface: T.surface,
-  text: T.ink,
-  muted: T.muted,
-  line: T.muted,
-  border: T.ink,
-  active: T.accent,
-  error: T.fail,
-  par: T.muted,
-};
+export interface CardOptions {
+  fill?: string;
+  stroke?: number;
+  rx?: number;
+  shadow?: boolean;
+  line?: string;
+  dash?: string;
+  theme?: RenderTheme;
+  /** Id of the soft drop-shadow filter (classic); without it a soft-shadow theme draws no shadow. */
+  shadowId?: string;
+}
 
-/** A card as on the canvas: `fill`, an ink border of `stroke` px and the hard 3px shadow (`--sh-sm`). */
-export function card(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  o: { fill?: string; stroke?: number; rx?: number; shadow?: boolean; line?: string; dash?: string } = {},
-): string {
-  const sw = o.stroke ?? 3;
-  const rx = o.rx ?? 4;
+/**
+ * A card in `theme` (default sketch): `fill` and a border of `stroke` px, with the
+ * canvas's hard 3px shadow (`--sh-sm`), or classic's soft drop shadow when `shadowId` names its filter.
+ */
+export function card(x: number, y: number, w: number, h: number, o: CardOptions = {}): string {
+  const th = o.theme ?? SKETCH;
+  const sw = o.stroke ?? th.card.stroke;
+  const rx = o.rx ?? th.card.rx;
   const dash = o.dash ? ` stroke-dasharray="${o.dash}"` : '';
+  const hard = o.shadow !== false && th.card.shadow === 'hard';
+  const soft = o.shadow !== false && th.card.shadow === 'soft' && o.shadowId ? ` filter="url(#${o.shadowId})"` : '';
   return [
-    o.shadow === false ? '' : `<rect x="${r(x + 3)}" y="${r(y + 3)}" width="${r(w)}" height="${r(h)}" rx="${rx}" fill="${T.shadow}"/>`,
-    `<rect x="${r(x + sw / 2)}" y="${r(y + sw / 2)}" width="${r(w - sw)}" height="${r(h - sw)}" rx="${rx}" fill="${o.fill ?? COLORS.surface}" stroke="${o.line ?? COLORS.border}" stroke-width="${sw}"${dash}/>`,
+    hard ? `<rect x="${r(x + 3)}" y="${r(y + 3)}" width="${r(w)}" height="${r(h)}" rx="${rx}" fill="${th.colors.shadow}"/>` : '',
+    `<rect x="${r(x + sw / 2)}" y="${r(y + sw / 2)}" width="${r(w - sw)}" height="${r(h - sw)}" rx="${rx}" fill="${o.fill ?? th.colors.surface}" stroke="${o.line ?? th.colors.border}" stroke-width="${sw}"${dash}${soft}/>`,
   ]
     .filter(Boolean)
     .join('\n');
@@ -122,15 +123,29 @@ export function r(n: number): string {
   return String(Math.round(n * 10) / 10);
 }
 
-/** The outer `<svg>` element with the canvas's paper background, so it reads well in dark viewers too. */
-export function svgDocument(width: number, height: number, title: string, body: string[], defs = ''): string {
+/** classic's card shadow (the canvas's old `shadow-md`), as a filter with id `id`. */
+export function softShadow(id: string): string {
+  // feDropShadow(dy 3, blur 4, black at 10%) spelled in SVG 1.1 primitives, which Inkscape and librsvg also draw.
+  return [
+    `<filter id="${id}" x="-10%" y="-10%" width="120%" height="140%">`,
+    '<feGaussianBlur in="SourceAlpha" stdDeviation="4"/>',
+    '<feOffset dx="0" dy="3" result="blur"/>',
+    '<feFlood flood-color="#000000" flood-opacity="0.1"/>',
+    '<feComposite in2="blur" operator="in"/>',
+    '<feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>',
+    '</filter>',
+  ].join('');
+}
+
+/** The outer `<svg>` element with the theme's opaque background, so it reads well in dark viewers too. */
+export function svgDocument(width: number, height: number, title: string, body: string[], defs = '', theme: RenderTheme = SKETCH): string {
   const w = Math.ceil(width);
   const h = Math.ceil(height);
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="${FONT}" role="img">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" font-family="${theme.font}" role="img">`,
     `<title>${esc(title)}</title>`,
     defs ? `<defs>${defs}</defs>` : '',
-    `<rect width="100%" height="100%" fill="${COLORS.background}"/>`,
+    `<rect width="100%" height="100%" fill="${theme.colors.background}"/>`,
     ...body,
     '</svg>',
   ]
