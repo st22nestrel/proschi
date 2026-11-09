@@ -32,8 +32,10 @@ URL hash). Each use case's description sits above it, folded, with
 The page's only script is allowed by its CSP hash.
 
 `proschi preview` (`src/render/serve.ts`) serves that page for any `.proschi`
-file on disk from a local server on 127.0.0.1: a file list, and a box to
-paste any path. It renders on every request, so a reload shows your edits.
+file on disk from a local server on 127.0.0.1. The start page lists the
+files by directory with their titles, and one box filters them or opens a
+pasted path. Each page has a bar with a file dropdown, previous/next and a
+box for any path. It renders on every request, so a reload shows your edits.
 
 ## Cut a fork release
 
