@@ -108,6 +108,62 @@ A step between two nodes that no connection joins, in either direction, is a
 warning, and the language server offers to add the connection. A node may
 call itself, and a document with no connections at all is not checked.
 
+## Sections
+
+A `section "Name" { … }` block names a run of steps, such as the phase of a
+request they belong to, or the part of a participant that performs them:
+a script file, a module, a handler. Sections nest, and the sequence diagram
+draws each one as a titled frame around its steps.
+
+```proschi
+runner "Test runner" [Actor]
+idp    "Keycloak"    [Auth Service]
+api    "Orders API"  [REST API]
+
+runner -> idp : OAuth2
+runner -> api : HTTPS
+
+usecase "Create order (debug)" {
+  section "PRE-REQUEST" {
+    section "collection.yml before-request" {
+      runner -> runner : Guard: mutations allowed
+      runner -> idp    : POST /token
+      idp   --> runner : 200
+    }
+    section "orders/folder.yml before-request" {
+      runner -> runner : Set runId
+    }
+  }
+  section "REQUEST" {
+    runner -> api : POST /orders {"sku": "A1"}
+    api --> runner : 201
+  }
+  section "TESTS" {
+    runner -> runner : Test status is 201
+  }
+}
+```
+
+A section only labels its steps. The steps, their numbers, the scenarios and
+the simulation are the same as without it, so you can add sections to an
+existing use case without changing what it measures.
+
+- A section goes inside a `usecase`, an `alt` branch or another section. It
+  may hold steps, `par` blocks, `alt` blocks and other sections. It can't go
+  inside a `par` block: put the `par` block inside the section instead.
+- `alt` blocks in different sections are separate sets of alternatives, as
+  if a step stood between them.
+- A response belongs to the section its `-->` is written in, which may differ
+  from its request's.
+- A section without steps is a warning.
+- `section` is a keyword only in the form `section "Name" {`, so a node may
+  still be called `section`.
+
+Exports keep sections: the [Markdown export](EDITORS.md#rendering-and-export) draws each one as a
+shaded Mermaid `rect` with its name in a note, and message lists in the
+design document head each run of steps with its section path, such as
+`PRE-REQUEST › collection.yml before-request`.
+
 ## Go further
 
 - [Scenarios](SCENARIOS.md): success and failure paths, and parallel steps.
