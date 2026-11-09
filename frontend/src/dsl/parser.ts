@@ -39,6 +39,7 @@ import type {
   ResolvedImport,
   Selector,
   SourceLoc,
+  StepSection,
   SystemEntry,
   SystemStub,
   TrafficEntry,
@@ -52,6 +53,8 @@ interface RawStep {
   arrow: Arrow;
   label: string;
   parallelGroup?: number;
+  /** The `section` blocks the line is in, outermost first; absent when none. */
+  sections?: StepSection[];
   /** `x200` at the start of the label (§7.3). */
   multiplier?: number;
   /** `~2MB` at the start of the label, in bytes (§7.3). */
@@ -88,9 +91,19 @@ type Frame =
   | { kind: 'usecase'; useCase: DiagramUseCase; body: Container; parCount: number; loc: SourceLoc }
   | { kind: 'alt'; name: string; body: Container; owner: Container; set: Item & { kind: 'alt' }; loc: SourceLoc }
   | { kind: 'par'; group: number; loc: SourceLoc }
+  | StepSectionFrame
   | SystemFrame
   | StubFrame
   | SectionFrame;
+
+/** A `section "Name" {` inside a use case: labels the steps in it, and holds none of its own. */
+interface StepSectionFrame {
+  kind: 'steps';
+  section: StepSection;
+  /** Steps written in it, nested sections included; an empty one is reported when it closes. */
+  steps: number;
+  loc: SourceLoc;
+}
 
 /** A multi-line `capacity {` inside a system. */
 interface StubFrame {
@@ -335,11 +348,13 @@ class Parser {
               ? `alt '${frame.name}'`
               : frame.kind === 'par'
                 ? 'par block'
-                : frame.kind === 'system'
-                  ? `system '${frame.system.id}'`
-                  : frame.kind === 'stub'
-                    ? `the capacity of system '${frame.system.id}'`
-                    : sectionName(frame);
+                : frame.kind === 'steps'
+                  ? `section '${frame.section.name}'`
+                  : frame.kind === 'system'
+                    ? `system '${frame.system.id}'`
+                    : frame.kind === 'stub'
+                      ? `the capacity of system '${frame.system.id}'`
+                      : sectionName(frame);
       this.error(`Missing } to close ${what}`, frame.loc);
       if (frame.kind === 'system') this.finishSystem(frame);
     }
@@ -426,6 +441,11 @@ class Parser {
         break;
       case 'alt':
         this.parseAlt(tokens, line);
+        break;
+      // A keyword only as `section "Name" {`, so a node may still be called section.
+      case 'section':
+        if ((second?.kind === 'string' || second?.kind === 'ident') && tokens[tokens.length - 1].kind === 'lbrace') this.parseStepSection(tokens, line);
+        else this.parseNode(tokens, line);
         break;
       case 'import':
         this.parseImport(tokens, line);
@@ -1010,7 +1030,7 @@ class Parser {
   private parseAlt(tokens: Token[], line: number) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== 'usecase' && top?.kind !== 'alt') {
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') {
       this.error(top?.kind === 'par' ? 'alt blocks cannot be inside a par block' : 'alt is only allowed inside a usecase', this.locOf(keyword, line));
       return;
     }
@@ -1046,7 +1066,7 @@ class Parser {
     }
 
     // Alt blocks that follow each other directly are alternatives to one another.
-    const owner = top.body;
+    const owner = this.currentBody()!;
     let set = owner.openAlt;
     if (!set) {
       set = { kind: 'alt', branches: [] };
@@ -1063,12 +1083,47 @@ class Parser {
   private closeFrame() {
     const frame = this.stack.pop();
     if (frame?.kind === 'alt') frame.owner.openAlt = frame.set;
+    if (frame?.kind === 'steps') {
+      // An alt after the section starts scenarios of its own, as after a step.
+      this.currentBody()!.openAlt = undefined;
+      if (frame.steps === 0) this.warning(`Section '${frame.section.name}' has no steps`, frame.section.loc);
+    }
+  }
+
+  /**
+   * `section "Name" {`: names the run of steps in it, e.g. the part of a
+   * participant that performs them. Sections nest and may hold `par` and
+   * `alt` blocks; they only label steps, so the steps, their numbers and the
+   * scenarios are the same as without them.
+   */
+  private parseStepSection(tokens: Token[], line: number) {
+    const keyword = tokens[0];
+    const nameToken = tokens[1];
+    const top = this.top();
+    const skip = (message: string, at = keyword) => {
+      const loc = this.locOf(at, line);
+      this.error(message, loc);
+      // Skipped with its contents, so its `}` does not close the enclosing block.
+      this.stack.push({ kind: 'section', section: 'test', discard: true, skipped: `section '${nameToken.value}'`, loc });
+    };
+    if (top?.kind === 'par') return skip('section blocks cannot be inside a par block; put the par block inside the section');
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') return skip('section is only allowed inside a usecase');
+    if (tokens.length > 3) return skip(`Unexpected ${describe(tokens[2])}; write section "Name" {`, tokens[2]);
+    const loc = this.locOf(nameToken, line);
+    if (!nameToken.value.trim()) return skip('A section needs a name, e.g. section "Auth" {');
+    this.currentBody()!.openAlt = undefined;
+    this.stack.push({ kind: 'steps', section: { name: nameToken.value.trim(), loc }, steps: 0, loc });
+  }
+
+  /** The `section` blocks around the current line, outermost first. */
+  private openSections(): StepSection[] {
+    return this.stack.flatMap((f) => (f.kind === 'steps' ? [f.section] : []));
   }
 
   private parsePar(tokens: Token[], line: number) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== 'usecase' && top?.kind !== 'alt') {
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') {
       this.error(top?.kind === 'par' ? 'par blocks cannot be nested' : 'par is only allowed inside a usecase', this.locOf(keyword, line));
       return;
     }
@@ -1077,7 +1132,7 @@ class Parser {
       return;
     }
     this.expectEnd(tokens, 2, line);
-    top.body.openAlt = undefined;
+    this.currentBody()!.openAlt = undefined;
     const useCase = this.currentUseCase()!;
     useCase.parCount++;
     this.stack.push({ kind: 'par', group: useCase.parCount, loc: this.locOf(keyword, line) });
@@ -1192,7 +1247,7 @@ class Parser {
     this.references.push({ id: from, loc: this.locOf(fromToken, line) }, toRef);
 
     const top = this.top();
-    const inUseCase = top?.kind === 'usecase' || top?.kind === 'alt' || top?.kind === 'par';
+    const inUseCase = top?.kind === 'usecase' || top?.kind === 'alt' || top?.kind === 'par' || top?.kind === 'steps';
     if (tagToken && inUseCase) {
       this.error('Tags style connections in the architecture, not use case steps', this.locOf(tagToken, line));
       return lastLine;
@@ -1202,6 +1257,8 @@ class Parser {
       body.openAlt = undefined;
       // Fan-out and payload size prefixes belong to requests; a response label is read as before.
       const prefixes = arrow === '-->' ? { rest: label } : this.readLabelPrefixes(label, labelToken!, line);
+      const sections = this.openSections();
+      for (const frame of this.stack) if (frame.kind === 'steps') frame.steps++;
       body.items.push({
         kind: 'step',
         step: {
@@ -1210,6 +1267,7 @@ class Parser {
           arrow,
           label: prefixes.rest,
           parallelGroup: top.kind === 'par' ? top.group : undefined,
+          ...(sections.length ? { sections } : {}),
           ...(prefixes.multiplier !== undefined ? { multiplier: prefixes.multiplier } : {}),
           ...(prefixes.sizeBytes !== undefined ? { sizeBytes: prefixes.sizeBytes } : {}),
           loc,
@@ -2208,6 +2266,7 @@ class Parser {
         }
         answered.add(request);
         request.responseLoc = step.loc;
+        if (!sameSections(step.sections, request.sections)) request.responseSections = step.sections ?? [];
         // Written after other steps (and not inside the request's own `par`): the response plays there.
         if (steps.length > steps.indexOf(request) + 1 && !(step.parallelGroup !== undefined && step.parallelGroup === request.parallelGroup)) {
           request.deferredResponse = { after: steps.length, ...(step.parallelGroup !== undefined ? { group: step.parallelGroup } : {}) };
@@ -2254,6 +2313,7 @@ class Parser {
         access: accessOf(label.method, step.label),
         ...(port !== undefined ? { toPort: port } : {}),
         ...(fromPort !== undefined ? { fromPort } : {}),
+        ...(step.sections ? { sections: step.sections } : {}),
       });
     }
 
@@ -2399,6 +2459,11 @@ class Parser {
     this.warned.add(key);
     this.diagnostics.push({ severity: 'warning', message, ...loc });
   }
+}
+
+/** The same `section` blocks (by where they are written), in the same order. */
+function sameSections(a: StepSection[] = [], b: StepSection[] = []): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
 }
 
 /**

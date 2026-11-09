@@ -12,7 +12,7 @@ export interface Segment {
 }
 
 const TOKEN =
-  /("(?:[^"\\]|\\.)*")|(\[[A-Za-z][^\]"]*\])|(@[A-Za-z_][\w-]*)|(-->|->>|->|-x(?!\w))|((?:^\s*|\}\s*)(?:title|import|group|usecase|par|alt)\b)|((?:^|\s)#.*$)|(\b[1-5]\d\d\b)|((?<=\balt\s+"(?:[^"\\]|\\.)*"\s+)when\b)|((?<=^[^:"]*:\s*(?:(?:x\d+|~\d+(?:\.\d+)?[KMGT]?B)\s+)*)(?:x\d+|~\d+(?:\.\d+)?[KMGT]?B)(?=\s|$))/g;
+  /("(?:[^"\\]|\\.)*")|(\[[A-Za-z][^\]"]*\])|(@[A-Za-z_][\w-]*)|(-->|->>|->|-x(?!\w))|((?:^\s*|\}\s*)(?:title|import|group|usecase|par|alt|section(?=\s+["\w]))\b)|((?:^|\s)#.*$)|(\b[1-5]\d\d\b)|((?<=\balt\s+"(?:[^"\\]|\\.)*"\s+)when\b)|((?<=^[^:"]*:\s*(?:(?:x\d+|~\d+(?:\.\d+)?[KMGT]?B)\s+)*)(?:x\d+|~\d+(?:\.\d+)?[KMGT]?B)(?=\s|$))/g;
 
 /** The last group is a `x200` / `~2MB` label prefix (§7.3). */
 const CLASSES: TokenClass[] = ['string', 'tech', 'team', 'arrow', 'keyword', 'comment', 'status', 'keyword', 'number'];

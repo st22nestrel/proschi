@@ -34,6 +34,13 @@ describe('JSON Schema', () => {
     expect(validate(result), JSON.stringify(validate.errors, null, 2)).toBe(true);
   });
 
+  it('describes use case sections', () => {
+    const source = 'usecase "U" {\n  section "Outer" {\n    section "Inner" {\n      a -> b : GET /x\n    }\n    b --> a : 200\n  }\n}';
+    const result = JSON.parse(JSON.stringify(parse(source)));
+    expect(result.diagram.useCases[0].steps[0]).toMatchObject({ sections: [{ name: 'Outer' }, { name: 'Inner' }], responseSections: [{ name: 'Outer' }] });
+    expect(validate(result), JSON.stringify(validate.errors, null, 2)).toBe(true);
+  });
+
   it('describes every requirement, assertion and selector', () => {
     const source = [
       'title "T" "Summary"',

@@ -212,8 +212,23 @@ export function diagramSchema() {
           multiplier: { type: 'integer', minimum: 1, description: '`x200` at the start of the label: the step happens this many times per request (fan-out). Absent means 1.' },
           sizeBytes: { type: 'integer', minimum: 1, description: '`~2MB` at the start of the label: payload size in bytes (decimal units).' },
           access: { enum: ['read', 'write'], description: 'From the HTTP method, or the first word of the label (INSERT, SET, PUBLISH, … write); every request step has one.' },
+          sections: {
+            type: 'array',
+            items: { $ref: '#/$defs/stepSection' },
+            description: 'The `section "…" { }` blocks the step is written in, outermost first. Labels only: they never change the step or its number.',
+          },
+          responseSections: {
+            type: 'array',
+            items: { $ref: '#/$defs/stepSection' },
+            description: 'The sections of the `-->` that answered the step, when they differ from `sections` (empty: written outside any section).',
+          },
         },
         ['stepOrder', 'stepName', 'fromServiceId', 'toServiceId', 'protocol', 'httpMethod', 'endpoint', 'requestFormat', 'responseFormat', 'executionType', 'isParallel', 'isConditional', 'access', 'loc'],
+      ),
+      stepSection: object(
+        { name: str, loc: { ...loc, description: 'The section name; tells two sections of the same name apart.' } },
+        ['name', 'loc'],
+        'A `section "Name" { … }` block of a use case.',
       ),
       selector: {
         description: 'A node id, an exact tech stack, every node of a kind (`any cache`), every data store of a consistency (`any strong store`), or a union (`X or Y`).',

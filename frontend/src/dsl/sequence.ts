@@ -1,4 +1,4 @@
-import type { Diagram, DiagramNode, DiagramScenario, DiagramStep, DiagramUseCase } from './types';
+import type { Diagram, DiagramNode, DiagramScenario, DiagramStep, DiagramUseCase, StepSection } from './types';
 
 /**
  * A scenario as a sequence diagram: the parser folds each `-->` into its
@@ -20,6 +20,8 @@ export interface SequenceMessage {
   /** A failed call, or a response with a 4xx/5xx status. */
   error: boolean;
   status?: number;
+  /** The `section` blocks the request (or the `-->` of a response) is written in, outermost first. */
+  sections: StepSection[];
   step: DiagramStep;
 }
 
@@ -74,6 +76,7 @@ function request(step: DiagramStep): SequenceMessage {
     async: step.executionType !== 'SYNC_REQUEST_RESPONSE',
     failed: !!step.failed,
     error: !!step.failed,
+    sections: step.sections ?? [],
     step,
   };
 }
@@ -89,6 +92,7 @@ function response(step: DiagramStep): SequenceMessage {
     failed: false,
     error: (step.statusCode ?? 0) >= 400,
     status: step.statusCode,
+    sections: step.responseSections ?? step.sections ?? [],
     step,
   };
 }
@@ -152,4 +156,57 @@ export function findScenario(diagram: Diagram, useCaseId: string, scenarioId?: s
 /** Every message in display order, flattening `par` branches. */
 export function sequenceMessages(items: SequenceItem[]): SequenceMessage[] {
   return items.flatMap((item) => (item.kind === 'message' ? [item.message] : item.branches.flat()));
+}
+
+/** A sequence item, or where a `section` frame opens or closes around items; `depth` counts the frames around it (0 outside any). */
+export type SectionedItem =
+  | { kind: 'item'; item: SequenceItem; depth: number }
+  | { kind: 'open'; section: StepSection; depth: number }
+  | { kind: 'close'; section: StepSection; depth: number };
+
+/** The same `section` block: compared by where its name is written, so copies of a parsed diagram compare equal. */
+export function sameSection(a: StepSection, b: StepSection): boolean {
+  return a.name === b.name && a.loc.line === b.loc.line && a.loc.col === b.loc.col && a.loc.file === b.loc.file;
+}
+
+function itemSections(item: SequenceItem): StepSection[] {
+  return item.kind === 'message' ? item.message.sections : (item.branches[0]?.[0]?.sections ?? []);
+}
+
+/**
+ * The items with the `section` frames around them: a frame opens before the
+ * first item of a run of items in the section and closes after the last.
+ * Frames nest like the blocks in the source. When an item from outside a
+ * section falls between items of it (a response answered later), the frame
+ * closes and opens again after it.
+ */
+export function sectionedItems(items: SequenceItem[]): SectionedItem[] {
+  const out: SectionedItem[] = [];
+  const open: StepSection[] = [];
+  for (const item of items) {
+    const path = itemSections(item);
+    let common = 0;
+    while (common < open.length && common < path.length && sameSection(open[common], path[common])) common++;
+    while (open.length > common) out.push({ kind: 'close', section: open.pop()!, depth: open.length });
+    for (const section of path.slice(common)) {
+      out.push({ kind: 'open', section, depth: open.length });
+      open.push(section);
+    }
+    out.push({ kind: 'item', item, depth: open.length });
+  }
+  while (open.length) out.push({ kind: 'close', section: open.pop()!, depth: open.length });
+  return out;
+}
+
+/**
+ * For lists of messages: the section path (`PRE-REQUEST › root.yml`) to show
+ * above each message that starts a new run of sections, else undefined.
+ */
+export function sectionHeadings(messages: SequenceMessage[]): (string | undefined)[] {
+  let previous: StepSection[] = [];
+  return messages.map((m) => {
+    const same = m.sections.length === previous.length && m.sections.every((s, i) => sameSection(s, previous[i]));
+    previous = m.sections;
+    return same || m.sections.length === 0 ? undefined : m.sections.map((s) => s.name).join(' › ');
+  });
 }

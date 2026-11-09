@@ -24,7 +24,7 @@ export type {
 export type { DiagramScenario } from '../../frontend/src/dsl/types';
 export { DIFF_SECTIONS, diffDiagrams, requirementKey, summarizeDiff, type DiagramDiff, type DiffSection, type FieldChange } from '../../frontend/src/dsl/diff';
 export { toMermaidArchitecture, toMermaidSequence } from '../../frontend/src/dsl/mermaid';
-export { buildSequence, type SequenceMessage } from '../../frontend/src/dsl/sequence';
+export { buildSequence, sectionedItems, type SequenceMessage } from '../../frontend/src/dsl/sequence';
 export { EXPORT_CSP, buildHld, toHtml as hldToHtml, toMarkdown as hldToMarkdown, type HldDocument, type HldFigures } from '../../frontend/src/hld';
 // `analyze` is the editor's simulation; tooling's own analysis.ts has an `analyze` for documents.
 export {
@@ -49,6 +49,7 @@ export const KEYWORDS: { label: string; detail: string; snippet: string }[] = [
   { label: 'usecase', detail: 'usecase "Name" { steps }', snippet: 'usecase "${1:Name}" {\n\t$0\n}' },
   { label: 'par', detail: 'Steps that run in parallel', snippet: 'par {\n\t$0\n}' },
   { label: 'alt', detail: 'One scenario of a use case', snippet: 'alt "${1:Scenario}" {\n\t$0\n}' },
+  { label: 'section', detail: 'Names a run of steps in a use case, drawn as a frame', snippet: 'section "${1:Name}" {\n\t$0\n}' },
   { label: 'legend', detail: 'Styles that .tag applies: owned "Owned by us" green', snippet: 'legend {\n\t${1:tag} "${2:What it means}" ${3:blue}$0\n}' },
   // Layout hints (docs/STYLING.md, "Steering the layout").
   { label: 'direction', detail: 'Where edges flow: down, right, up or left (top level or in a group)', snippet: 'direction ${1|down,right,up,left|}' },

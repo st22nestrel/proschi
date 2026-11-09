@@ -1,4 +1,4 @@
-import { buildSequence, findScenario, sequenceMessages } from '../dsl/sequence';
+import { buildSequence, findScenario, sectionHeadings, sequenceMessages } from '../dsl/sequence';
 import {
   LOAD_HEADINGS,
   accessText,
@@ -64,6 +64,7 @@ figure { margin: 8px 0; overflow-x: auto; background: var(--card); border: 1px s
 figure svg { display: block; max-width: none; }
 ol.messages { font-size: 13px; padding-left: 24px; }
 ol.messages .error { color: var(--fail); }
+ol.messages .section { font-weight: 600; color: var(--muted); margin-top: 4px; }
 ul.risks { padding-left: 20px; }
 `;
 
@@ -79,10 +80,13 @@ function messageList(doc: HldDocument, useCaseId: string, scenarioId: string): s
   if (!found) return '';
   const sequence = buildSequence(found.useCase, found.scenario, doc.diagram.nodes);
   const name = (id: string) => sequence.participants.find((p) => p.id === id)?.name ?? id;
-  return `<ol class="messages">${sequenceMessages(sequence.items)
-    .map((m) => {
+  const messages = sequenceMessages(sequence.items);
+  const headings = sectionHeadings(messages);
+  return `<ol class="messages">${messages
+    .map((m, i) => {
       const arrow = m.kind === 'response' ? '⇠' : m.failed ? '✗→' : m.async ? '⇢' : '→';
-      return `<li${m.error ? ' class="error"' : ''}>${e(name(m.from))} ${arrow} ${e(name(m.to))}${m.label ? `: <code>${e(m.label)}</code>` : ''}</li>`;
+      const heading = headings[i] ? `<div class="section">${e(headings[i])}</div>` : '';
+      return `<li${m.error ? ' class="error"' : ''}>${heading}${e(name(m.from))} ${arrow} ${e(name(m.to))}${m.label ? `: <code>${e(m.label)}</code>` : ''}</li>`;
     })
     .join('')}</ol>`;
 }

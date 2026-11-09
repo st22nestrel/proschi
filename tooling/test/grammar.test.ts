@@ -57,6 +57,12 @@ describe('TextMate grammar', () => {
     ]);
   });
 
+  it('scopes section as a keyword only before its name', () => {
+    const lines = tokenize('usecase "U" {\n  section "Auth" {\n    section -> api : GET /x\n  }\n}');
+    expect(lines[1][0]).toEqual(['section', 'keyword.control.proschi']);
+    expect(lines[2][0][1]).not.toBe('keyword.control.proschi');
+  });
+
   it('scopes imports and their path', () => {
     const [line] = tokenize('import "infra/shared.proschi" # the platform');
     expect(line).toEqual([
