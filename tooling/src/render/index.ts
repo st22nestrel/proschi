@@ -11,6 +11,7 @@ import { EXPORT_CSP, toMermaidArchitecture, toMermaidSequence, type Diagram, typ
 import { renderArchitectureSvg, type ArchitectureOptions } from './architecture';
 import { renderSequenceSvg, scenarioTitle } from './sequence';
 import { renderHldHtml, renderHldMarkdown } from './hld';
+import { descriptionHtml } from './description';
 import { esc } from './svg';
 import { SKETCH, type RenderTheme } from './theme';
 
@@ -148,6 +149,15 @@ const previewStyle = (th: RenderTheme) => `${pageStyle(th)}
 .content { max-width: none; }
 details { margin-bottom: 24px; }
 summary { cursor: pointer; font-size: 16px; font-weight: 600; margin-bottom: 8px; }
+details.description { margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
+details.description summary { font-size: 14px; color: var(--muted); }
+details.description p { margin: 0 0 8px; max-width: 900px; }
+details.description table { border-collapse: collapse; margin: 0 0 12px; }
+details.description th, details.description td { text-align: left; vertical-align: top; padding: 4px 12px 4px 0; border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); }
+details.description th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+details.description td:first-child { white-space: nowrap; font-weight: 600; }
+details.description tr.current td { color: var(--link); }
+details.description tr.current td:first-child::before { content: '▸ '; }
 .picker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; font-size: 14px; }
 .picker select { font: inherit; padding: 2px 4px; max-width: 100%; }
 .picker .count { color: var(--muted); font-size: 13px; }
@@ -159,7 +169,18 @@ const PREVIEW_SCRIPT = `
 const select = document.getElementById('scenario');
 if (select) {
   const figures = document.querySelectorAll('.scenario');
-  const show = (slug) => figures.forEach((el) => { el.hidden = el.dataset.slug !== slug; });
+  const useCases = document.querySelectorAll('.usecase');
+  const rows = document.querySelectorAll('.description tr[data-slug]');
+  const show = (slug) => {
+    figures.forEach((el) => { el.hidden = el.dataset.slug !== slug; });
+    useCases.forEach((el) => { el.hidden = !el.querySelector('.scenario:not([hidden])'); });
+    rows.forEach((el) => { el.classList.toggle('current', el.dataset.slug === slug); });
+  };
+  // Every description folds and unfolds together, so switching scenarios keeps it as you left it.
+  const descriptions = document.querySelectorAll('details.description');
+  descriptions.forEach((d) => d.addEventListener('toggle', () => {
+    descriptions.forEach((other) => { if (other.open !== d.open) other.open = d.open; });
+  }));
   const fromHash = () => {
     const slug = decodeURIComponent(location.hash.slice(1));
     if (Array.from(select.options).some((o) => o.value === slug)) select.value = slug;
@@ -178,7 +199,9 @@ const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).d
 
 /**
  * The page like the VS Code preview: the architecture in a `<details>` (open,
- * fold it to save room) and one scenario at a time, picked from a list. Its
+ * fold it to save room) and one scenario at a time, picked from a list. Above
+ * the scenario, its use case's description, folded, with lists such as
+ * `Requests: a (x); b (y)` as tables (see description.ts). Its
  * CSP allows only its own style and script, by hash, so nothing from the
  * document can run; without scripts the first scenario still shows.
  */
@@ -200,7 +223,17 @@ export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, t
     const count = `${rendered.scenarios.length} scenario${rendered.scenarios.length === 1 ? '' : 's'}`;
     body.push(
       `<section><label class="picker">Scenario <select id="scenario">${groups}</select><span class="count">${count}</span></label>`,
-      ...rendered.scenarios.map((s, i) => `<figure class="scenario" data-slug="${esc(s.slug)}"${i ? ' hidden' : ''}>${s.svg}</figure>`),
+      ...diagram.useCases.map((uc) => {
+        const items = rendered.scenarios.filter((s) => s.useCase === uc);
+        if (!items.length) return '';
+        const first = items[0] === rendered.scenarios[0];
+        const slugs = new Map(items.map((s) => [s.scenario.name, s.slug]));
+        const description = uc.description
+          ? `<details class="description"><summary>Description</summary>${descriptionHtml(uc.description, slugs)}</details>`
+          : '';
+        const figures = items.map((s) => `<figure class="scenario" data-slug="${esc(s.slug)}"${s === rendered.scenarios[0] ? '' : ' hidden'}>${s.svg}</figure>`).join('');
+        return `<div class="usecase"${first ? '' : ' hidden'}>${description}${figures}</div>`;
+      }),
       '</section>',
     );
   } else {

@@ -94,7 +94,10 @@ proschi render [--out <dir>] [--format svg|md|html|preview-html|hld-md|hld-html]
   scenario list
 - `preview-html`: `<file>.preview.html`, the VS Code preview as a page: the
   architecture (fold it away to make room) and one scenario at a time, picked
-  from a list. The picked scenario is kept in the URL (`#<usecase>--<scenario>`)
+  from a list. The picked scenario is kept in the URL (`#<usecase>--<scenario>`).
+  Above it, the use case's description folds open; a sentence like
+  `Requests: Own ids (public); Other office (broker, office-*)` is shown as a
+  table, with the picked scenario's row marked
 
 `--out` defaults to the current directory; the written paths are printed.
 Imports are followed as for `check`. A document with errors in any of its
