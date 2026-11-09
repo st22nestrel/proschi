@@ -1,4 +1,4 @@
-import { buildSequence, type Diagram, type DiagramScenario, type DiagramUseCase, type SequenceMessage } from '../proschi';
+import { buildSequence, sectionedItems, type Diagram, type DiagramScenario, type DiagramUseCase, type SequenceMessage } from '../proschi';
 import { techIcon, typeColor } from './icons';
 import { card, esc, fit, marker, r, svgDocument, text, textWidth } from './svg';
 import { SKETCH, type RenderTheme } from './theme';
@@ -6,7 +6,8 @@ import { SKETCH, type RenderTheme } from './theme';
 /**
  * One scenario as an SVG sequence diagram: a header box and dashed lifeline
  * per participant, numbered request arrows, dashed responses with their
- * status codes, `par` regions, and error replies and failed calls in red,
+ * status codes, `par` regions, titled frames for `section` blocks, and
+ * error replies and failed calls in red,
  * in the render theme's style (theme.ts): `sketch`, the canvas's ink cards
  * with hard shadows and pink step numbers, or `classic`, rounded grey cards
  * with type-coloured icon tiles and blue requests and step numbers.
@@ -20,8 +21,16 @@ const LABEL_SIZE = 12;
 const LABEL_MAX = 380;
 const MIN_GAP = 150;
 const PAR_PAD = 12;
+/** Room above a section's first step for its title tab, and how far each nested frame is inset. */
+const SECTION_HEAD = 24;
+const SECTION_INSET = 7;
+const SECTION_TAB = 18;
 
-type Row = { kind: 'message'; message: SequenceMessage; y: number } | { kind: 'par-start' | 'par-and' | 'par-end'; y: number };
+type Row =
+  | { kind: 'message'; message: SequenceMessage; y: number }
+  | { kind: 'par-start' | 'par-and' | 'par-end'; y: number; depth: number }
+  | { kind: 'section-start'; name: string; y: number; depth: number }
+  | { kind: 'section-end'; y: number; depth: number };
 
 function labelText(m: SequenceMessage): string {
   return fit(m.label || (m.kind === 'response' ? '' : ' '), LABEL_MAX, LABEL_SIZE);
@@ -85,22 +94,34 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
     rows.push({ kind: 'message', message: m, y: y + (self ? -16 : 0) });
     y += ROW;
   };
-  for (const item of seq.items) {
+  for (const entry of sectionedItems(seq.items)) {
+    const depth = entry.depth;
+    // A message's label sits about 20px above its line; `y` is where the next line goes.
+    if (entry.kind === 'open') {
+      rows.push({ kind: 'section-start', name: entry.section.name, y: y - 26, depth });
+      y += SECTION_HEAD;
+      continue;
+    }
+    if (entry.kind === 'close') {
+      rows.push({ kind: 'section-end', y: y - ROW + PAR_PAD, depth });
+      y += 8;
+      continue;
+    }
+    const item = entry.item;
     if (item.kind === 'message') {
       place(item.message);
       continue;
     }
-    // A message's label sits about 20px above its line; `y` is where the next line goes.
     y += PAR_PAD + 8;
-    rows.push({ kind: 'par-start', y: y - 20 - PAR_PAD - 8 });
+    rows.push({ kind: 'par-start', y: y - 20 - PAR_PAD - 8, depth });
     item.branches.forEach((branch, i) => {
       if (i > 0) {
-        rows.push({ kind: 'par-and', y: y - ROW + PAR_PAD });
+        rows.push({ kind: 'par-and', y: y - ROW + PAR_PAD, depth });
         y += 8;
       }
       branch.forEach(place);
     });
-    rows.push({ kind: 'par-end', y: y - ROW + PAR_PAD });
+    rows.push({ kind: 'par-end', y: y - ROW + PAR_PAD, depth });
     y += 8;
   }
   const bottom = y - ROW / 2 + 12;
@@ -112,19 +133,54 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
     subtitle.length ? text(MARGIN, MARGIN + 36, subtitle.join(' · '), { size: 12, fill: scenario.outcome === 'error' ? C.error : C.muted }) : '',
   ];
 
-  // par regions behind everything else.
+  // Section frames, outermost first, then par regions, behind everything else.
+  // Each nesting level is inset a little on both sides so nested frames stay apart.
+  const left = (depth: number) => MARGIN / 2 + depth * SECTION_INSET;
+  const span = (depth: number) => width - MARGIN - 2 * depth * SECTION_INSET;
+  const g = th.group;
+  const sectionTops: { name: string; y: number }[] = [];
+  const frames: { name: string; top: number; bottom: number; depth: number }[] = [];
+  for (const row of rows) {
+    if (row.kind === 'section-start') sectionTops.push({ name: row.name, y: row.y });
+    if (row.kind === 'section-end') {
+      const start = sectionTops.pop()!;
+      frames.push({ name: start.name, top: start.y, bottom: row.y, depth: row.depth });
+    }
+  }
+  frames.sort((a, b) => a.depth - b.depth || a.top - b.top);
+  const lineOpacity = g.lineOpacity !== undefined ? ` stroke-opacity="${g.lineOpacity}"` : '';
+  for (const f of frames) {
+    body.push(
+      `<rect data-kind="section" data-section="${esc(f.name)}" x="${r(left(f.depth))}" y="${r(f.top)}" width="${r(span(f.depth))}" height="${r(f.bottom - f.top)}" rx="4" fill="${g.line}" fill-opacity="0.035" stroke="${g.line}"${lineOpacity} stroke-width="1.2"/>`,
+    );
+  }
+  // The title tabs, a corner label as in a UML frame, go over the lifelines: drawn after them, opaque.
+  const tabs = frames.map((f) => {
+    const x = left(f.depth);
+    const name = fit(f.name, span(f.depth) - 24, 11, true);
+    const w = textWidth(name, 11, true) + 22;
+    const d = `M${r(x)},${r(f.top + 4)} Q${r(x)},${r(f.top)} ${r(x + 4)},${r(f.top)} H${r(x + w)} V${r(f.top + SECTION_TAB - 6)} L${r(x + w - 6)},${r(f.top + SECTION_TAB)} H${r(x)} Z`;
+    return [
+      `<g data-kind="section-title">`,
+      `<path d="${d}" fill="${C.background}"/>`,
+      `<path d="${d}" fill="${g.line}" fill-opacity="0.12" stroke="${g.line}"${lineOpacity} stroke-width="1.2"/>`,
+      text(x + 8, f.top + 13, name, { size: 11, weight: th.bold, fill: C.text }),
+      '</g>',
+    ].join('\n');
+  });
   let parTop = 0;
   for (const row of rows) {
     if (row.kind === 'par-start') parTop = row.y;
     if (row.kind === 'par-and') {
-      body.push(`<line x1="${MARGIN / 2}" y1="${r(row.y)}" x2="${r(width - MARGIN / 2)}" y2="${r(row.y)}" stroke="${C.par}" stroke-width="1" stroke-dasharray="4 3"/>`);
+      body.push(`<line x1="${r(left(row.depth))}" y1="${r(row.y)}" x2="${r(left(row.depth) + span(row.depth))}" y2="${r(row.y)}" stroke="${C.par}" stroke-width="1" stroke-dasharray="4 3"/>`);
     }
     if (row.kind === 'par-end') {
+      const x = left(row.depth);
       body.push(
         `<g data-kind="par">`,
-        `<rect x="${MARGIN / 2}" y="${r(parTop)}" width="${r(width - MARGIN)}" height="${r(row.y - parTop)}" rx="4" fill="${C.par}" fill-opacity="0.04" stroke="${C.par}" stroke-width="1"/>`,
-        `<path d="M${MARGIN / 2},${r(parTop + 18)} H${MARGIN / 2 + 30} L${MARGIN / 2 + 36},${r(parTop + 12)} V${r(parTop)}" fill="none" stroke="${C.par}" stroke-width="1"/>`,
-        text(MARGIN / 2 + 6, parTop + 13, 'par', { size: 11, weight: 600, fill: C.par }),
+        `<rect x="${r(x)}" y="${r(parTop)}" width="${r(span(row.depth))}" height="${r(row.y - parTop)}" rx="4" fill="${C.par}" fill-opacity="0.04" stroke="${C.par}" stroke-width="1"/>`,
+        `<path d="M${r(x)},${r(parTop + 18)} H${r(x + 30)} L${r(x + 36)},${r(parTop + 12)} V${r(parTop)}" fill="none" stroke="${C.par}" stroke-width="1"/>`,
+        text(x + 6, parTop + 13, 'par', { size: 11, weight: 600, fill: C.par }),
         '</g>',
       );
     }
@@ -156,6 +212,7 @@ export function renderSequenceSvg(diagram: Diagram, useCase: DiagramUseCase, sce
     );
   });
 
+  body.push(...tabs);
   if (messages.length === 0) body.push(text(MARGIN, headerTop + 16, 'No steps', { fill: C.muted }));
   for (const row of rows) {
     if (row.kind !== 'message') continue;
