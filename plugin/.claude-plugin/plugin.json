@@ -1,7 +1,7 @@
 {
   "name": "proschi",
   "displayName": "Proschi",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Turn infrastructure, code and docs into Proschi architecture models that render, simulate and pass their checks, and draw them right in Claude Code's terminal.",
   "author": {
     "name": "gvart",

@@ -9,6 +9,14 @@ deployed from `main` and ships with the same changes. From 0.12.0 on,
 [release-please](https://github.com/googleapis/release-please) writes each
 section from the conventional commit titles of the merged pull requests.
 
+## [0.16.2](https://github.com/gvart/proschi/compare/tooling-v0.16.1...tooling-v0.16.2) (2026-11-09)
+
+
+### Fixed
+
+* **billing:** hide credit-metered features until paid plans launch ([#193](https://github.com/gvart/proschi/issues/193)) ([b62181c](https://github.com/gvart/proschi/commit/b62181cb576a8d1ead999abe8919823e5e1a92d2))
+* **practice:** steps not stages, a one-row phone header, readable skill map labels ([#191](https://github.com/gvart/proschi/issues/191)) ([84869a2](https://github.com/gvart/proschi/commit/84869a285d3897f357fe551ca0746c7729c11e7d))
+
 ## [0.16.1](https://github.com/gvart/proschi/compare/tooling-v0.16.0...tooling-v0.16.1) (2026-11-09)
 
 

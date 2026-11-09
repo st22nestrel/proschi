@@ -10,7 +10,7 @@
     {
       "name": "proschi",
       "source": "./plugin",
-      "version": "0.16.1",
+      "version": "0.16.2",
       "description": "Skills that turn infrastructure, code and docs into checked Proschi architecture models (infra-to-proschi, image-to-proschi, code-to-usecases, proschi-capacity-plan, proschi-design-review, proschi-keep-in-sync, proschi-hld-doc), and diagrams drawn in Claude Code's terminal with a player for their use cases.",
       "category": "development",
       "tags": [
