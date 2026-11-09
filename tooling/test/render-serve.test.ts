@@ -21,7 +21,8 @@ let base: string;
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'proschi-serve-'));
-  writeFileSync(join(root, 'top.proschi'), DOC);
+  writeFileSync(join(root, 'top.proschi'), `title "Top \\"one\\""\n${DOC}`);
+  writeFileSync(join(root, 'zz.proschi'), DOC);
   mkdirSync(join(root, 'classic'));
   writeFileSync(join(root, 'classic', 'proschi.json'), JSON.stringify({ theme: 'classic' }));
   writeFileSync(join(root, 'classic', 'c.proschi'), DOC);
@@ -41,25 +42,48 @@ const get = async (path: string) => {
 const view = (path: string) => get(`/view?path=${encodeURIComponent(path)}`);
 
 describe('proschi preview server', () => {
-  it('lists the files under the root, each linked to its page, with a box for any path', async () => {
+  it('lists the files under the root by directory, with titles, and one box to filter or paste a path', async () => {
     const { status, headers, html } = await get('/');
     expect(status).toBe(200);
     expect(headers.get('cache-control')).toBe('no-store');
-    expect(html).toContain('<form class="open" action="/view" method="get">');
-    expect(html).toContain(`<a href="/view?path=${encodeURIComponent(join(root, 'top.proschi'))}">top.proschi</a>`);
-    expect(html).toContain(`>${join('classic', 'c.proschi')}</a>`);
+    expect(html).toContain('<form class="find" action="/view" method="get"><input id="filter" name="path"');
+    expect(html).toContain(`<a href="/view?path=${encodeURIComponent(join(root, 'top.proschi'))}"><span class="name">top.proschi</span><span class="title">Top &quot;one&quot;</span></a>`);
+    expect(html).toContain('<section class="group"><h2>classic/</h2>');
+    expect(html).toContain('<option value="" selected disabled>Choose a file…</option>');
     expect(html).not.toContain('secret.txt');
-    expect(html).not.toContain('<script');
+    // Its only script is the navigation one, allowed by hash.
+    expect(html.match(/<script>/g)).toHaveLength(1);
+    expect(html).toMatch(/script-src 'sha256-[^']+'; base-uri/);
   });
 
-  it('renders the preview page of a file, with the box holding its path', async () => {
+  it('renders the preview page of a file, with a bar to switch files', async () => {
     const file = join(root, 'top.proschi');
     const { status, html } = await view(file);
     expect(status).toBe(200);
     expect(html).toContain('<select id="scenario">');
     expect(html).toContain('<details class="description">');
-    expect(html).toContain(`<input name="path" value="${file}"`);
+    expect(html).toContain(`<option value="${file}" selected>Top &quot;one&quot; — top.proschi</option>`);
+    expect(html).toContain(`<input id="path" name="path" value="${file}"`);
+    expect(html).toContain('<p class="file-path">top.proschi</p>');
     expect(html).toContain("form-action 'self'");
+    expect(html.match(/<script>/g)).toHaveLength(2);
+  });
+
+  it('links the previous and next files in list order', async () => {
+    const { html } = await view('top.proschi');
+    expect(html).toContain(`id="next" href="/view?path=${encodeURIComponent(join(root, 'zz.proschi'))}"`);
+    expect(html).toContain(`id="prev" href="/view?path=${encodeURIComponent(join(root, 'broken.proschi'))}"`);
+    const last = await view('classic/c.proschi');
+    expect(last.html).toContain('<span class="button step" aria-disabled="true" aria-label="Next file">');
+    expect((await view('broken.proschi')).html).toContain('<span class="button step" aria-disabled="true" aria-label="Previous file">');
+  });
+
+  it('adds a file outside the root to the dropdown', async () => {
+    const outside = join(mkdtempSync(join(tmpdir(), 'proschi-elsewhere-')), 'o.proschi');
+    writeFileSync(outside, DOC);
+    const { html } = await view(outside);
+    expect(html).toContain(`<optgroup label="Elsewhere"><option value="${outside}" selected>`);
+    expect(html).toContain(`<p class="file-path">${outside}</p>`);
   });
 
   it('accepts relative paths, file:// URLs and quoted paths', async () => {

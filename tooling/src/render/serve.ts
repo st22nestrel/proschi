@@ -9,17 +9,17 @@
  * address or localhost (so another site can't reach it by DNS rebinding),
  * and opens only .proschi files.
  */
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { homedir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyze } from '../../../frontend/src/sim/analyze';
 import { displayPath, parseFile } from '../imports';
 import { viewOverlay } from '../terminal/systems';
 import { themeFlagAt, themeFor } from './themeConfig';
-import { cspHash, openerHtml, previewStyle, renderPreviewHtml, renderSvgs } from './index';
+import { fileListHtml, NAV_SCRIPT, navBarHtml, pageCsp, previewStyle, renderPreviewHtml, renderSvgs, type PreviewFile } from './index';
 import { esc } from './svg';
 import { SKETCH, type RenderTheme } from './theme';
 
@@ -44,27 +44,59 @@ export function resolveInput(input: string, root: string): string {
   return resolve(root, p);
 }
 
-/** A page of the server itself (start page, errors): its own style by hash, no scripts, forms to this server only. */
-function page(title: string, path: string, body: string, theme: RenderTheme): string {
+/** A page of the server itself (start page, errors): its own style and script by hash, forms to this server only. */
+function page(title: string, nav: { current?: string; files: PreviewFile[] }, body: string, theme: RenderTheme): string {
   const style = previewStyle(theme);
-  const csp = [`default-src 'none'`, `style-src ${cspHash(style)}`, `base-uri 'none'`, `form-action 'self'`].join('; ');
   return [
     '<!doctype html>',
     '<html lang="en">',
     '<head>',
     '<meta charset="utf-8">',
-    `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+    `<meta http-equiv="Content-Security-Policy" content="${pageCsp(style, [NAV_SCRIPT], true)}">`,
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>${esc(title)}</title>`,
     `<style>${style}</style>`,
     '</head>',
     '<body>',
-    `<header><h1>${esc(title)}</h1>${openerHtml({ path })}</header>`,
+    navBarHtml(nav),
+    `<header><h1>${esc(title)}</h1>${nav.current ? `<p class="file-path">${esc(nav.current)}</p>` : ''}</header>`,
     `<main><div class="content">${body}</div></main>`,
+    `<script>${NAV_SCRIPT}</script>`,
     '</body>',
     '</html>',
     '',
   ].join('\n');
+}
+
+/** The `title "…"` of a file, read without parsing it. */
+function titleOf(file: string): string | undefined {
+  try {
+    const m = /^[ \t]*title[ \t]+"((?:[^"\\\n]|\\.)*)"/m.exec(readFileSync(file, 'utf8'));
+    return m?.[1].replace(/\\(.)/g, '$1');
+  } catch {
+    return undefined;
+  }
+}
+
+/** The .proschi files under the root (at most MAX_LISTED), with their titles, and how many there are in all. */
+function listing(options: PreviewServerOptions): { files: PreviewFile[]; total: number; error?: string } {
+  let paths: string[];
+  try {
+    paths = options.listFiles(options.root);
+  } catch (e) {
+    return { files: [], total: 0, error: (e as Error).message };
+  }
+  const files = paths.slice(0, MAX_LISTED).map((p) => {
+    const path = resolve(options.root, p);
+    return { path, dir: relative(options.root, dirname(path)) || '.', name: basename(path), title: titleOf(path) };
+  });
+  return { files, total: paths.length };
+}
+
+/** How a file is named on its page: relative to the root when it is below it. */
+function shownPath(file: string, root: string): string {
+  const rel = relative(root, file);
+  return rel && !rel.startsWith('..') && !rel.startsWith('/') ? rel : file;
 }
 
 /** The server's own pages look like the root's diagrams: --theme, else the root's proschi.json. */
@@ -79,25 +111,18 @@ function look(options: PreviewServerOptions): RenderTheme {
 const viewLink = (file: string) => `/view?path=${encodeURIComponent(file)}`;
 
 function startPage(options: PreviewServerOptions): string {
-  let files: string[];
-  try {
-    files = options.listFiles(options.root);
-  } catch (e) {
-    return page('Proschi preview', '', `<p class="errors">Can't list ${esc(options.root)}: ${esc((e as Error).message)}</p>`, look(options));
-  }
-  const shown = files.slice(0, MAX_LISTED);
-  const items = shown.map((f) => {
-    const abs = resolve(options.root, f);
-    return `<li><a href="${esc(viewLink(abs))}">${esc(relative(options.root, abs) || abs)}</a></li>`;
-  });
-  const more = files.length > shown.length ? `<p class="about">And ${files.length - shown.length} more; paste a path above to open one.</p>` : '';
-  const list = files.length ? `<ul class="files">${items.join('')}</ul>${more}` : '<p class="about">No .proschi files here; paste a path above.</p>';
-  return page('Proschi preview', '', `<p class="about">Paste the path of any .proschi file above, or pick one under ${esc(options.root)}:</p>${list}`, look(options));
+  const { files, total, error } = listing(options);
+  const theme = look(options);
+  if (error) return page('Proschi preview', { files }, `<p class="errors">Can't list ${esc(options.root)}: ${esc(error)}</p>`, theme);
+  const more = total > files.length ? `<p class="about">And ${total - files.length} more; paste a path above to open one.</p>` : '';
+  const about = `<p class="about">${total} file${total === 1 ? '' : 's'} under ${esc(options.root)}</p>`;
+  return page('Proschi preview', { files }, `${about}${fileListHtml(files, options.root)}${more}`, theme);
 }
 
 /** The preview page of `file`, or a page saying why there is none. */
 async function filePage(file: string, options: PreviewServerOptions): Promise<{ status: number; html: string }> {
-  const fail = (status: number, body: string) => ({ status, html: page('Not shown', file, body, look(options)) });
+  const { files } = listing(options);
+  const fail = (status: number, body: string) => ({ status, html: page('Not shown', { current: file, files }, body, look(options)) });
   if (!file.endsWith('.proschi')) return fail(400, `<p class="errors">Only .proschi files open here: ${esc(file)}</p>`);
   if (!existsSync(file) || !statSync(file).isFile()) return fail(404, `<p class="errors">No such file: ${esc(file)}</p>`);
   const theme = themeFor(file, options.theme);
@@ -110,7 +135,7 @@ async function filePage(file: string, options: PreviewServerOptions): Promise<{ 
   const analysis = diagram.systems?.length && diagram.traffic?.length ? analyze(diagram) : undefined;
   const { systems, nodes } = viewOverlay(diagram, analysis);
   const rendered = await renderSvgs(diagram, true, { systems, nodes, theme });
-  return { status: 200, html: renderPreviewHtml(diagram, rendered, theme, { path: file }) };
+  return { status: 200, html: renderPreviewHtml(diagram, rendered, theme, { current: file, files, shown: shownPath(file, options.root) }) };
 }
 
 function send(res: ServerResponse, status: number, html: string, head: boolean) {
@@ -140,7 +165,7 @@ export function createPreviewServer(options: PreviewServerOptions): Server {
       }
       const url = new URL(req.url ?? '/', `http://${hosts[0]}`);
       if (url.pathname === '/') return send(res, 200, startPage(options), head);
-      if (url.pathname !== '/view') return send(res, 404, page('Not found', '', `<p class="errors">No page at ${esc(url.pathname)}.</p>`, look(options)), head);
+      if (url.pathname !== '/view') return send(res, 404, page('Not found', { files: listing(options).files }, `<p class="errors">No page at ${esc(url.pathname)}.</p>`, look(options)), head);
       const input = url.searchParams.get('path') ?? '';
       if (!input.trim()) {
         res.writeHead(303, { Location: '/' }).end();
@@ -150,13 +175,13 @@ export function createPreviewServer(options: PreviewServerOptions): Server {
       try {
         file = resolveInput(input, options.root);
       } catch (e) {
-        return send(res, 400, page('Not shown', input, `<p class="errors">${esc((e as Error).message)}</p>`, look(options)), head);
+        return send(res, 400, page('Not shown', { files: listing(options).files }, `<p class="errors">${esc((e as Error).message)}</p>`, look(options)), head);
       }
       try {
         const { status, html } = await filePage(file, options);
         send(res, status, html, head);
       } catch (e) {
-        send(res, 500, page('Not shown', file, `<p class="errors">${esc(String((e as Error).message ?? e))}</p>`, look(options)), head);
+        send(res, 500, page('Not shown', { current: file, files: listing(options).files }, `<p class="errors">${esc(String((e as Error).message ?? e))}</p>`, look(options)), head);
       }
     })();
   });

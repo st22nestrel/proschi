@@ -115,8 +115,11 @@ proschi preview [--port <n>] [--root <dir>] [--theme sketch|classic] [<file>]
 Serves the `preview-html` page of any `.proschi` file at
 <http://127.0.0.1:4280/> until Ctrl+C (`--port 0` picks a free port). The
 start page lists the files under `--root` (default: the current directory)
-and has a box to paste a path: absolute, `~/…`, `file://…` or relative to
-the root. Every page has the same box, so you can jump to another file.
+by directory, with their titles, and has one box that filters the list as
+you type (Enter opens the first match) or takes a pasted path: absolute,
+`~/…`, `file://…` or relative to the root. Every page has a bar with a
+dropdown of those files, previous and next buttons (`[` and `]`), and
+"Open path…" (`/`) for any other file; Esc goes back to the list.
 Files are parsed and rendered on each request, so a reload shows your edits;
 a file with errors shows them instead. With `<file>`, its page's address is
 printed too. The server listens on 127.0.0.1 only, answers only requests

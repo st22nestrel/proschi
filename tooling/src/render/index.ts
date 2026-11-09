@@ -147,12 +147,39 @@ export function renderHtml(diagram: Diagram, rendered: RenderedDiagram, theme: R
 
 export const previewStyle = (th: RenderTheme) => `${pageStyle(th)}
 .content { max-width: none; }
-form.open { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 14px; }
-form.open input { flex: 1; min-width: 0; max-width: 720px; font: inherit; padding: 3px 6px; }
-form.open button { font: inherit; padding: 3px 10px; }
-form.open a, .files a { color: var(--link); }
-.files { font-size: 14px; line-height: 1.7; padding-left: 20px; }
 .errors { color: var(--error); font-size: 14px; }
+
+/* proschi preview (the local server): a bar to switch files, a filterable list of them. */
+.bar { position: sticky; top: 0; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 24px; font-size: 14px; background: var(--bg); border-bottom: 1px solid color-mix(in srgb, var(--muted) 30%, transparent); }
+.bar .home { font-weight: 700; color: var(--fg); text-decoration: none; margin-right: 8px; }
+.bar form { display: flex; gap: 6px; align-items: center; margin: 0; }
+.bar .pick { flex: 0 1 auto; min-width: 0; }
+.bar .pick select { max-width: min(62vw, 560px); }
+.bar .step { min-width: 30px; text-align: center; }
+.bar .step[aria-disabled] { opacity: 0.35; pointer-events: none; }
+.bar details { position: relative; margin: 0 0 0 auto; }
+.bar details summary { font-size: 14px; font-weight: 400; margin: 0; list-style: none; }
+.bar details summary::-webkit-details-marker { display: none; }
+.bar details form { position: absolute; right: 0; top: calc(100% + 6px); width: min(720px, 92vw); padding: 10px; background: var(--bg); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.25); }
+.bar details input { flex: 1; }
+.bar select, .bar input, .bar .button, .bar button, .find input { font: inherit; color: var(--fg); background: color-mix(in srgb, var(--fg) 6%, var(--bg)); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent); border-radius: 6px; padding: 4px 10px; min-width: 0; }
+.bar .button, .bar button { cursor: pointer; text-decoration: none; display: inline-block; }
+.bar .button:hover, .bar button:hover, .bar select:hover { border-color: var(--muted); }
+.bar :focus-visible, .find input:focus-visible { outline: 2px solid var(--link); outline-offset: 1px; }
+.file-path { margin: 4px 0 0; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+kbd { font: 11px ui-monospace, monospace; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--muted) 50%, transparent); border-radius: 3px; color: var(--muted); }
+.find { display: flex; gap: 8px; align-items: center; margin: 0 0 16px; max-width: 900px; }
+.find input { flex: 1; padding: 8px 12px; font-size: 15px; }
+.find .hint { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.files { max-width: 900px; font-size: 14px; }
+.files .group { margin: 0 0 14px; }
+.files h2 { margin: 0 0 4px; color: var(--muted); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.files ul { list-style: none; margin: 0; padding: 0; }
+.files a { display: flex; gap: 12px; align-items: baseline; padding: 6px 10px; border-radius: 6px; color: var(--fg); text-decoration: none; }
+.files a:hover, .files li.first a { background: color-mix(in srgb, var(--link) 12%, transparent); }
+.files .name { font-weight: 600; white-space: nowrap; }
+.files .title { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files .none { color: var(--muted); }
 details { margin-bottom: 24px; }
 summary { cursor: pointer; font-size: 16px; font-weight: 600; margin-bottom: 8px; }
 details.description { margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
@@ -203,15 +230,154 @@ if (select) {
 
 export const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).digest('base64')}'`;
 
-/** Shown on `proschi preview` pages: a box to open another file, and a link to the file list. */
-export interface PreviewOpener {
-  /** The path the box starts with: the file shown. */
+/** A .proschi file the `proschi preview` server can show. */
+export interface PreviewFile {
+  /** Absolute path. */
   path: string;
+  /** Directory it is listed under (relative to the root, `.` for the root itself). */
+  dir: string;
+  /** File name. */
+  name: string;
+  /** Its `title`, if it has one. */
+  title?: string;
 }
 
-/** The `proschi preview` header form; it sends `path` to `/view` on the same server. */
-export function openerHtml(opener: PreviewOpener): string {
-  return `<form class="open" action="/view" method="get"><a href="/">Files</a><input name="path" value="${esc(opener.path)}" placeholder="Path to a .proschi file" aria-label="Path to a .proschi file" spellcheck="false" autocomplete="off"><button>Open</button></form>`;
+/** The file switcher on `proschi preview` pages. */
+export interface PreviewNav {
+  /** The file shown, if any. */
+  current?: string;
+  /** The files under the server's root, in order. */
+  files: PreviewFile[];
+}
+
+const viewHref = (file: string) => `/view?path=${encodeURIComponent(file)}`;
+
+/** Files grouped by directory, in their order. */
+export function groupFiles(files: PreviewFile[]): [string, PreviewFile[]][] {
+  const groups = new Map<string, PreviewFile[]>();
+  for (const f of files) groups.set(f.dir, [...(groups.get(f.dir) ?? []), f]);
+  return [...groups];
+}
+
+/**
+ * The `proschi preview` bar: a link to the file list, the file dropdown with
+ * previous/next buttons, and a box for any path. Without scripts the dropdown
+ * has an Open button; with them, picking a file opens it.
+ */
+export function navBarHtml(nav: PreviewNav): string {
+  const grouped = groupFiles(nav.files);
+  // Previous and next go in the order the dropdown shows.
+  const order = grouped.flatMap(([, files]) => files);
+  const index = nav.current ? order.findIndex((f) => f.path === nav.current) : -1;
+  const groups = grouped.map(
+    ([dir, files]) =>
+      `<optgroup label="${esc(dir === '.' ? './' : `${dir}/`)}">${files
+        .map((f) => `<option value="${esc(f.path)}"${f.path === nav.current ? ' selected' : ''}>${esc(f.title ? `${f.title} — ${f.name}` : f.name)}</option>`)
+        .join('')}</optgroup>`,
+  );
+  if (nav.current && index < 0) groups.push(`<optgroup label="Elsewhere"><option value="${esc(nav.current)}" selected>${esc(nav.current)}</option></optgroup>`);
+  const placeholder = nav.current ? '' : '<option value="" selected disabled>Choose a file…</option>';
+  const step = (to: number, label: string, key: string, rel: string) => {
+    const f = index >= 0 ? order[to] : undefined;
+    return f
+      ? `<a class="button step" id="${rel}" href="${esc(viewHref(f.path))}" title="${esc(`${label}: ${f.title ?? f.name} (${key})`)}" aria-label="${label} file">${rel === 'prev' ? '‹' : '›'}</a>`
+      : `<span class="button step" aria-disabled="true" aria-label="${label} file">${rel === 'prev' ? '‹' : '›'}</span>`;
+  };
+  return [
+    '<nav class="bar" aria-label="Files">',
+    '<a class="home" href="/" title="All files (Esc)">Proschi</a>',
+    nav.current ? step(index - 1, 'Previous', '[', 'prev') : '',
+    `<form class="pick" action="/view" method="get"><select id="file" name="path" aria-label="File">${placeholder}${groups.join('')}</select><button class="go">Open</button></form>`,
+    nav.current ? step(index + 1, 'Next', ']', 'next') : '',
+    '<details class="path"><summary class="button" title="Open any .proschi file by its path (/)">Open path…</summary>',
+    `<form action="/view" method="get"><input id="path" name="path" value="${esc(nav.current ?? '')}" placeholder="/path/to/diagram.proschi, ~/…, file://… or relative to the root" aria-label="Path to a .proschi file" spellcheck="false" autocomplete="off"><button>Open</button></form>`,
+    '</details>',
+    '</nav>',
+  ].join('');
+}
+
+/** The `proschi preview` start page body: one box that filters the list, or opens a pasted path. */
+export function fileListHtml(files: PreviewFile[], root: string): string {
+  const find =
+    '<form class="find" action="/view" method="get"><input id="filter" name="path" autofocus placeholder="Filter files, or paste the path of any .proschi file" aria-label="Filter files, or a path to open" spellcheck="false" autocomplete="off"><span class="hint"><kbd>Enter</kbd> opens the first match</span></form>';
+  if (!files.length) return `${find}<p class="about">No .proschi files under ${esc(root)}; paste a path above.</p>`;
+  const groups = groupFiles(files).map(([dir, items]) => {
+    const rows = items.map((f) => {
+      const key = [dir, f.name, f.title ?? ''].join(' ').toLowerCase();
+      return `<li data-key="${esc(key)}"><a href="${esc(viewHref(f.path))}"><span class="name">${esc(f.name)}</span>${f.title ? `<span class="title">${esc(f.title)}</span>` : ''}</a></li>`;
+    });
+    return `<section class="group"><h2>${esc(dir === '.' ? './' : `${dir}/`)}</h2><ul>${rows.join('')}</ul></section>`;
+  });
+  return `${find}<div class="files">${groups.join('')}<p class="none" hidden>No file matches; <kbd>Enter</kbd> opens it as a path.</p></div>`;
+}
+
+/** The `proschi preview` pages' script: the dropdown opens what you pick, the box filters the list, keys step through files. */
+export const NAV_SCRIPT = `
+const pick = document.getElementById('file');
+if (pick) {
+  pick.form.querySelector('.go').hidden = true;
+  pick.addEventListener('change', () => { if (pick.value) pick.form.submit(); });
+}
+const filter = document.getElementById('filter');
+if (filter) {
+  const items = Array.from(document.querySelectorAll('.files li[data-key]'));
+  const groups = document.querySelectorAll('.files .group');
+  const none = document.querySelector('.files .none');
+  let first;
+  const apply = () => {
+    const terms = filter.value.trim().toLowerCase().split(/\\s+/).filter(Boolean);
+    first = undefined;
+    items.forEach((li) => {
+      li.hidden = !terms.every((t) => li.dataset.key.includes(t));
+      li.classList.remove('first');
+      if (!li.hidden && !first) first = li;
+    });
+    if (terms.length && first) first.classList.add('first');
+    groups.forEach((g) => { g.hidden = !g.querySelector('li:not([hidden])'); });
+    if (none) none.hidden = !!first;
+  };
+  filter.addEventListener('input', apply);
+  // Enter opens the first match; with none, the form sends the text as a path.
+  filter.form.addEventListener('submit', (e) => {
+    if (first && filter.value.trim()) { e.preventDefault(); location.href = first.querySelector('a').href; }
+  });
+  apply();
+}
+const path = document.getElementById('path');
+const pathBox = path && path.closest('details');
+if (pathBox) pathBox.addEventListener('toggle', () => { if (pathBox.open) path.select(); });
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const typing = e.target.closest && e.target.closest('input, select, textarea');
+  if (e.key === 'Escape') {
+    if (pathBox && pathBox.open) { pathBox.open = false; return; }
+    if (!typing && !filter) location.href = '/';
+    return;
+  }
+  if (typing) return;
+  const go = (id) => { const a = document.getElementById(id); if (a) location.href = a.href; };
+  if (e.key === '[') go('prev');
+  else if (e.key === ']') go('next');
+  else if (e.key === '/') {
+    e.preventDefault();
+    if (filter) filter.focus();
+    else if (pathBox) pathBox.open = true;
+  }
+});
+`;
+
+/** A page's CSP; `nav` pages (the local server) also run NAV_SCRIPT and send forms to the same server. */
+export function pageCsp(style: string, scripts: string[], nav: boolean, images = false): string {
+  return [
+    `default-src 'none'`,
+    images ? 'img-src data:' : '',
+    `style-src ${cspHash(style)}`,
+    scripts.length ? `script-src ${scripts.map(cspHash).join(' ')}` : '',
+    `base-uri 'none'`,
+    `form-action ${nav ? "'self'" : "'none'"}`,
+  ]
+    .filter(Boolean)
+    .join('; ');
 }
 
 /**
@@ -221,13 +387,13 @@ export function openerHtml(opener: PreviewOpener): string {
  * `Requests: a (x); b (y)` as tables (see description.ts). Its
  * CSP allows only its own style and script, by hash, so nothing from the
  * document can run; without scripts the first scenario still shows.
- * With `opener` (the `proschi preview` server), the header has a box to open
- * another file, and the CSP lets that form go to the same server.
+ * With `nav` (the `proschi preview` server), a bar on top switches files,
+ * and the CSP lets its script run and its forms go to the same server.
  */
-export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH, opener?: PreviewOpener): string {
+export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH, nav?: PreviewNav & { shown?: string }): string {
   const title = diagram.title ?? 'Architecture';
   const style = previewStyle(theme);
-  const csp = [`default-src 'none'`, `img-src data:`, `style-src ${cspHash(style)}`, `script-src ${cspHash(PREVIEW_SCRIPT)}`, `base-uri 'none'`, `form-action ${opener ? "'self'" : "'none'"}`].join('; ');
+  const csp = pageCsp(style, nav ? [PREVIEW_SCRIPT, NAV_SCRIPT] : [PREVIEW_SCRIPT], !!nav, true);
   const body = [`<details open><summary>Architecture</summary><figure>${rendered.architecture}</figure></details>`];
   if (rendered.scenarios.length) {
     const groups = diagram.useCases
@@ -269,11 +435,13 @@ export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, t
     `<style>${style}</style>`,
     '</head>',
     '<body>',
-    `<header><h1>${esc(title)}</h1>${opener ? openerHtml(opener) : ''}</header>`,
+    nav ? navBarHtml(nav) : '',
+    `<header><h1>${esc(title)}</h1>${nav?.shown ? `<p class="file-path">${esc(nav.shown)}</p>` : ''}</header>`,
     '<main><div class="content">',
     ...body,
     '</div></main>',
     `<script>${PREVIEW_SCRIPT}</script>`,
+    nav ? `<script>${NAV_SCRIPT}</script>` : '',
     '</body>',
     '</html>',
     '',
