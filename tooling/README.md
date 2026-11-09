@@ -106,6 +106,24 @@ stop it. The SVGs are self-contained, with a white background, and look like
 the web editor's canvas (same layout, cards and icons). The renderer is a
 separate bundle (`dist/render.cjs`), loaded only by `proschi render`.
 
+### Preview server
+
+```
+proschi preview [--port <n>] [--root <dir>] [--theme sketch|classic] [<file>]
+```
+
+Serves the `preview-html` page of any `.proschi` file at
+<http://127.0.0.1:4280/> until Ctrl+C (`--port 0` picks a free port). The
+start page lists the files under `--root` (default: the current directory)
+and has a box to paste a path: absolute, `~/…`, `file://…` or relative to
+the root. Every page has the same box, so you can jump to another file.
+Files are parsed and rendered on each request, so a reload shows your edits;
+a file with errors shows them instead. With `<file>`, its page's address is
+printed too. The server listens on 127.0.0.1 only, answers only requests
+addressed to `127.0.0.1` or `localhost` (no DNS rebinding), and opens only
+`.proschi` files. The theme comes from `--theme`, else each file's nearest
+`proschi.json`.
+
 `--theme` picks the look of the SVGs (and of the `html`, `preview-html` and `hld-html` pages
 that embed them):
 

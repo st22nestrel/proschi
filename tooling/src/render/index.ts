@@ -145,8 +145,14 @@ export function renderHtml(diagram: Diagram, rendered: RenderedDiagram, theme: R
   ].join('\n');
 }
 
-const previewStyle = (th: RenderTheme) => `${pageStyle(th)}
+export const previewStyle = (th: RenderTheme) => `${pageStyle(th)}
 .content { max-width: none; }
+form.open { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 14px; }
+form.open input { flex: 1; min-width: 0; max-width: 720px; font: inherit; padding: 3px 6px; }
+form.open button { font: inherit; padding: 3px 10px; }
+form.open a, .files a { color: var(--link); }
+.files { font-size: 14px; line-height: 1.7; padding-left: 20px; }
+.errors { color: var(--error); font-size: 14px; }
 details { margin-bottom: 24px; }
 summary { cursor: pointer; font-size: 16px; font-weight: 600; margin-bottom: 8px; }
 details.description { margin-bottom: 12px; font-size: 14px; line-height: 1.5; }
@@ -195,7 +201,18 @@ if (select) {
 }
 `;
 
-const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).digest('base64')}'`;
+export const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).digest('base64')}'`;
+
+/** Shown on `proschi preview` pages: a box to open another file, and a link to the file list. */
+export interface PreviewOpener {
+  /** The path the box starts with: the file shown. */
+  path: string;
+}
+
+/** The `proschi preview` header form; it sends `path` to `/view` on the same server. */
+export function openerHtml(opener: PreviewOpener): string {
+  return `<form class="open" action="/view" method="get"><a href="/">Files</a><input name="path" value="${esc(opener.path)}" placeholder="Path to a .proschi file" aria-label="Path to a .proschi file" spellcheck="false" autocomplete="off"><button>Open</button></form>`;
+}
 
 /**
  * The page like the VS Code preview: the architecture in a `<details>` (open,
@@ -204,11 +221,13 @@ const cspHash = (code: string) => `'sha256-${createHash('sha256').update(code).d
  * `Requests: a (x); b (y)` as tables (see description.ts). Its
  * CSP allows only its own style and script, by hash, so nothing from the
  * document can run; without scripts the first scenario still shows.
+ * With `opener` (the `proschi preview` server), the header has a box to open
+ * another file, and the CSP lets that form go to the same server.
  */
-export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH): string {
+export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, theme: RenderTheme = SKETCH, opener?: PreviewOpener): string {
   const title = diagram.title ?? 'Architecture';
   const style = previewStyle(theme);
-  const csp = [`default-src 'none'`, `img-src data:`, `style-src ${cspHash(style)}`, `script-src ${cspHash(PREVIEW_SCRIPT)}`, `base-uri 'none'`, `form-action 'none'`].join('; ');
+  const csp = [`default-src 'none'`, `img-src data:`, `style-src ${cspHash(style)}`, `script-src ${cspHash(PREVIEW_SCRIPT)}`, `base-uri 'none'`, `form-action ${opener ? "'self'" : "'none'"}`].join('; ');
   const body = [`<details open><summary>Architecture</summary><figure>${rendered.architecture}</figure></details>`];
   if (rendered.scenarios.length) {
     const groups = diagram.useCases
@@ -250,7 +269,7 @@ export function renderPreviewHtml(diagram: Diagram, rendered: RenderedDiagram, t
     `<style>${style}</style>`,
     '</head>',
     '<body>',
-    `<header><h1>${esc(title)}</h1></header>`,
+    `<header><h1>${esc(title)}</h1>${opener ? openerHtml(opener) : ''}</header>`,
     '<main><div class="content">',
     ...body,
     '</div></main>',

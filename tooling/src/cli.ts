@@ -7,6 +7,7 @@
  * `proschi cards check|lock` validates the practice cards (see cards.ts);
  * `proschi achievements check|lock` validates the practice achievements (see achievements.ts);
  * `proschi game check|lock|sim` validates and plays the Scale or Fail content (see game.ts);
+ * `proschi preview` serves the preview-html page of any file (see render/serve.ts);
  * `proschi share-link` prints a web editor link for a file (see share.ts).
  * `proschi import mermaid|openapi` converts other formats to Proschi (see importCommand.ts).
  * `proschi imports sync` fetches git, https and cloud imports into the cache and proschi.lock (see sync.ts).
@@ -17,7 +18,7 @@ import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { openApiDiagnostics, parseSpecFlag } from './openapi/config';
 import type { Diagnostic } from './proschi';
-import { RENDER_HELP, RENDER_USAGE } from './render/usage';
+import { PREVIEW_HELP, PREVIEW_USAGE, RENDER_HELP, RENDER_USAGE } from './render/usage';
 import { FMT_HELP, FMT_USAGE, runFmt } from './fmt';
 import { checkFiles, parseFile } from './imports';
 import { SIM_HELP, SIM_USAGE, runAnalyze, runTest } from './simulation';
@@ -38,6 +39,7 @@ const USAGE = `Usage:
   proschi check [--strict] [--format text|github|json] [--openapi <node>=<spec>]... <file|dir>...
   proschi parse <file>
 ${RENDER_USAGE}
+${PREVIEW_USAGE}
 ${FMT_USAGE}
 ${SIM_USAGE}
 ${PROBLEM_USAGE}
@@ -60,6 +62,7 @@ check   Reports errors and warnings. Directories are searched for *.proschi file
 parse   Prints {"diagram", "diagnostics"} as JSON; the shape is described by
         schema/proschi-diagram.schema.json.
 ${RENDER_HELP}
+${PREVIEW_HELP}
 ${FMT_HELP}
 ${SIM_HELP}
 ${PROBLEM_HELP}
@@ -139,6 +142,7 @@ export function run(argv: string[], out: (s: string) => void = console.log, err:
 
   // The renderer (ELK, React for the icons) is a separate bundle, loaded only here.
   if (command === 'render') return import('./render/command').then((m) => m.renderCommand(rest, out, err, USAGE));
+  if (command === 'preview') return import('./render/command').then((m) => m.previewCommand(rest, (dir) => collectFiles([dir]), out, err, USAGE));
   if (command === 'fmt') return runFmt(rest, collectFiles, out, err);
   if (command === 'test') return runTest(rest, collectFiles, out, err);
   if (command === 'analyze') return runAnalyze(rest, out, err);

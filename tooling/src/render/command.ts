@@ -1,12 +1,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import { basename, extname, join } from 'node:path';
 import { displayPath, parseFile } from '../imports';
-import { findConfigFile, readConfig } from '../openapi/config';
 import { analyze } from '../../../frontend/src/sim/analyze';
 import type { ParseResult } from '../proschi';
 import { applyView, idList, viewError, viewOverlay, type SystemsView } from '../terminal/systems';
 import { FORMATS, renderFiles, type RenderFormat } from './index';
-import { THEME_NAMES, getTheme, isThemeName, type RenderTheme } from './theme';
+import type { RenderTheme } from './theme';
+import { themeFlagAt, themeFor } from './themeConfig';
+
+export { previewCommand } from './serve';
 
 /**
  * `proschi render`: parses `<file>`, refuses on errors, and writes the files
@@ -39,16 +41,13 @@ export async function renderCommand(args: string[], out: (s: string) => void, er
       }
       dir = value;
     } else if (arg === '--theme' || arg.startsWith('--theme=')) {
-      const value = arg === '--theme' ? args[++i] : arg.slice('--theme='.length);
-      if (!value || value.startsWith('-')) {
-        err(`Missing theme after --theme; use ${THEME_NAMES.join(', ')}`);
+      const flag = themeFlagAt(args, i);
+      if ('error' in flag) {
+        err(flag.error);
         return 2;
       }
-      if (!isThemeName(value)) {
-        err(`Unknown theme '${value}'; use ${THEME_NAMES.join(', ')}`);
-        return 2;
-      }
-      themeFlag = value;
+      themeFlag = flag.value;
+      i = flag.next;
     } else if (arg === '--format') {
       const value = args[++i];
       if (!FORMATS.includes(value as RenderFormat)) {
@@ -67,19 +66,9 @@ export async function renderCommand(args: string[], out: (s: string) => void, er
   }
 
   const file = files[0];
-  // The flag wins; else the nearest proschi.json's "theme"; else sketch.
   let theme: RenderTheme;
   try {
-    if (themeFlag) theme = getTheme(themeFlag);
-    else {
-      const configFile = findConfigFile(dirname(resolve(file)));
-      const name = configFile ? readConfig(configFile).theme : undefined;
-      if (name !== undefined && !isThemeName(name)) {
-        err(`Unknown theme '${name}' in ${configFile}; use ${THEME_NAMES.join(', ')}`);
-        return 2;
-      }
-      theme = getTheme(name);
-    }
+    theme = themeFor(file, themeFlag);
   } catch (e) {
     err(String((e as Error).message));
     return 2;

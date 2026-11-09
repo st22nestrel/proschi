@@ -393,6 +393,11 @@ proschi render shop.proschi --out site --format preview-html # site/shop.preview
 | `hld-md` | `<file>.hld.md`: the [HLD document](#hld-documents) with Mermaid diagrams |
 | `hld-html` | `<file>.hld.html`: the same document as one page with every SVG |
 
+To browse any file's preview page without writing files, run
+`proschi preview` and open <http://127.0.0.1:4280/>. It lists the `.proschi`
+files under the current folder (or `--root <dir>`) and has a box to paste the
+path of any other file. A reload shows your latest edits.
+
 `--out` defaults to the current folder. The SVGs use the editor's layout and
 cards, need no fonts or stylesheets, and have a white background. A document
 with errors in any of its files is not rendered: `render` prints them and

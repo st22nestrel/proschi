@@ -31,6 +31,10 @@ URL hash). Each use case's description sits above it, folded, with
 `Label: name (detail); …` sentences shown as tables (`src/render/description.ts`).
 The page's only script is allowed by its CSP hash.
 
+`proschi preview` (`src/render/serve.ts`) serves that page for any `.proschi`
+file on disk from a local server on 127.0.0.1: a file list, and a box to
+paste any path. It renders on every request, so a reload shows your edits.
+
 ## Cut a fork release
 
 1. Bump `version` in `tooling/package.json` (and the two matching entries at
