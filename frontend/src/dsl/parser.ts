@@ -5,6 +5,7 @@ import { endpointGroupKey } from './paths';
 import { DATA_STORE_KINDS, KINDS, TYPE_OF_KIND, isDataStore, isKind, kindFromName, kindOf } from './kinds';
 import { parseQuantity } from './quantity';
 import { accessOf } from './access';
+import { buildSequence } from './sequence';
 import { COLOR_NAMES, editDistance, resolveColor, suggestColor } from './palette';
 import type {
   FlowStep,
@@ -237,6 +238,8 @@ class Parser {
   private readonly diagnostics: Diagnostic[] = [];
   /** Warnings reported so far (see `warning`). */
   private readonly warned = new Set<string>();
+  /** Responses already reported as drawn away from where they are written. */
+  private readonly movedResponses = new Set<string>();
   private readonly nodes = new Map<string, DiagramNode>();
   private readonly edges: DiagramEdge[] = [];
   /** Connections so far per `from->to`, for the ids of repeated ones. */
@@ -2236,6 +2239,8 @@ class Parser {
       };
     });
 
+    for (const scenario of scenarios) this.checkResponseOrder(useCase, scenario);
+
     const steps = scenarios[0]?.steps ?? [];
     const entry = steps[0];
     return {
@@ -2331,6 +2336,60 @@ class Parser {
     // A response travels back along the request's connection, so suggest the request direction.
     const [from, to] = step.arrow === '-->' ? [b, a] : [a, b];
     this.warning(`No connection between '${from}' and '${to}' in the architecture; add '${from} -> ${to}'`, step.loc);
+  }
+
+  /**
+   * Warns when the sequence diagram draws a `-->` in other `section` frames
+   * than where it is written. Responses are placed by the call stack: a callee
+   * answers once its own calls are done, and open calls are answered before
+   * their caller sends again. Requests are drawn in the order written, so a
+   * response moves when a request written after it is drawn before it, or one
+   * written before it is drawn after it. Only moves past requests in other
+   * sections are reported: those split a frame or reorder the frames, while a
+   * move inside one run of sections changes no frame.
+   */
+  private checkResponseOrder(useCase: DiagramUseCase, scenario: DiagramScenario) {
+    const before = (a: SourceLoc, b: SourceLoc) => (a.file ?? '') === (b.file ?? '') && (a.line < b.line || (a.line === b.line && a.col < b.col));
+    const path = (sections: StepSection[]) => (sections.length ? `section '${sections.map((s) => s.name).join(' › ')}'` : 'no section');
+    type Drawn = { request: true; loc: SourceLoc; name: string; sections: StepSection[] } | { request: false; loc: SourceLoc; step: DiagramStep; sections: StepSection[] };
+    const drawn: Drawn[] = [];
+    for (const item of buildSequence(useCase, scenario).items) {
+      if (item.kind === 'par') {
+        // A par block draws in place as one unit; its responses follow their requests inside it.
+        const first = item.branches[0]?.[0]?.step;
+        if (first?.loc) drawn.push({ request: true, loc: first.loc, name: 'the par block', sections: first.sections ?? [] });
+        continue;
+      }
+      const { message } = item;
+      if (message.kind === 'request') {
+        if (message.step.loc) drawn.push({ request: true, loc: message.step.loc, name: `'${message.step.stepName}'`, sections: message.sections });
+      } else if (message.step.responseLoc) drawn.push({ request: false, loc: message.step.responseLoc, step: message.step, sections: message.sections });
+    }
+    drawn.forEach((r, i) => {
+      if (r.request) return;
+      // A response shared by several scenarios is reported once, for the first scenario that moves it.
+      const key = `${r.loc.file ?? ''}\n${r.loc.line}\n${r.loc.col}`;
+      if (this.movedResponses.has(key)) return;
+      const elsewhere = (m: Drawn) => m.request && !sameSections(m.sections, r.sections);
+      const later = drawn.slice(0, i).filter((m) => elsewhere(m) && before(r.loc, m.loc));
+      const earlier = drawn.slice(i + 1).filter((m) => elsewhere(m) && before(m.loc, r.loc));
+      const { fromServiceId: caller, toServiceId: callee } = r.step;
+      if (later.length) {
+        const m = later[later.length - 1] as Extract<Drawn, { request: true }>;
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn after ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${callee} answers ${caller} once its own calls are done. Move the --> below that step, or nest that step's section inside this response's section`,
+          r.loc,
+        );
+      } else if (earlier.length) {
+        const m = earlier[0] as Extract<Drawn, { request: true }>;
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn before ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${caller} gets the answer from ${callee} before it sends again. Move the --> above that step`,
+          r.loc,
+        );
+      }
+    });
   }
 
   private createImplicitNodes() {

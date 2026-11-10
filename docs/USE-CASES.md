@@ -155,6 +155,12 @@ existing use case without changing what it measures.
   if a step stood between them.
 - A response belongs to the section its `-->` is written in, which may differ
   from its request's.
+- The sequence diagram draws a response where its call ends, which isn't
+  always where the `-->` is written. A callee answers after the calls it
+  makes, and a caller gets its answer before it sends again. When this moves a
+  response past steps in another section, which splits a frame or reorders
+  the frames, the response gets a warning. To fix it, move the `-->`, or nest
+  the callee's section inside the request's.
 - A section without steps is a warning.
 - `section` is a keyword only in the form `section "Name" {`, so a node may
   still be called `section`.

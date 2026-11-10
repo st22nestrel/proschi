@@ -172,6 +172,26 @@ usecase "U" {
     expect(errors(`${arch}usecase "U" {\n  section "Open" {\n    runner -> api : GET /x\n`)).toEqual(["8: error: Missing } to close usecase 'U'", "9: error: Missing } to close section 'Open'"]);
   });
 
+  it('warns when a response is drawn in other section frames than where it is written', () => {
+    const warnings = (body: string) => parse(`${arch}usecase "U" {\n${body}}\n`).diagnostics.map((d) => `${d.line}: ${d.severity}: ${d.message}`);
+    // The 201 is answered once the API's INSERT is done, so the REQUEST frame splits around HANDLER.
+    expect(warnings('  section "REQUEST" {\n    runner -> api : POST /orders\n    api --> runner : 201\n  }\n  section "HANDLER" {\n    api -> db : INSERT order\n  }\n')).toEqual([
+      "11: warning: This response is drawn after 'INSERT order' (line 14, section 'HANDLER'), not where it is written: api answers runner once its own calls are done. Move the --> below that step, or nest that step's section inside this response's section",
+    ]);
+    // The runner sends again, so the 201 written last is drawn before the PRE-REQUEST frame, sync or async.
+    for (const arrow of ['->', '->>']) {
+      expect(
+        warnings(`  section "REQUEST" {\n    runner ${arrow} api : POST /orders\n  }\n  section "PRE-REQUEST" {\n    runner -> idp : POST /token\n    idp --> runner : 200\n  }\n  section "RESPONSE" {\n    api --> runner : 201\n  }\n`),
+      ).toEqual([
+        "17: warning: This response is drawn before 'POST /token' (line 13, section 'PRE-REQUEST'), not where it is written: runner gets the answer from api before it sends again. Move the --> above that step",
+      ]);
+    }
+    // Nested sections, a response outside any section, and moves without sections draw as written frames.
+    expect(warnings('  section "REQUEST" {\n    runner -> api : POST /orders\n    section "HANDLER" {\n      api -> db : INSERT order\n    }\n    api --> runner : 201\n  }\n')).toEqual([]);
+    expect(warnings('  section "REQUEST" {\n    runner -> api : POST /orders\n    api -> db : INSERT order\n  }\n  api --> runner : 201\n')).toEqual([]);
+    expect(warnings('  runner -> api : POST /orders\n  api --> runner : 201\n  api -> db : INSERT order\n')).toEqual([]);
+  });
+
   it('still lets a node be called section', () => {
     const { diagram, diagnostics } = parse('section [Service]\napi [REST API]\nsection -> api\nusecase "U" {\n  section -> api : GET /x\n}\n');
     expect(diagnostics).toEqual([]);
