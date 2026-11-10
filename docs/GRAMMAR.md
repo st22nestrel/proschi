@@ -11,7 +11,7 @@ document     = { line } ;
 line         = [ statement ] [ comment ] newline ;
 
 statement    = title | import | node | connection
-             | group-open | system | usecase-open | par-open | alt-open | close
+             | group-open | system | usecase-open | par-open | alt-open | section-open | close
              | traffic | requirements | capacity | entity | decision | test | legend
              | direction | layout ;
 
@@ -37,6 +37,7 @@ tag          = "." , id ;                                (* one token, e.g. .pla
 usecase-open = "usecase" , ( string | id ) , [ string ] , "{" ;
 par-open     = "par" , "{" ;
 alt-open     = "alt" , ( string | id ) , [ "when" , string ] , "{" ;
+section-open = "section" , ( string | id ) , "{" ;     (* labels the steps in it *)
 close        = "}" , [ alt-open ] ;
 
 traffic      = "traffic" , "{" , { string , quantity , [ "mix" , share , { "," , share } ] } , "}" ;
@@ -96,7 +97,7 @@ size-unit    = "B" | "KB" | "MB" | "GB" | "TB" ;
 ## Where each statement may appear
 
 
-| Statement | Top level | In `group` | In `usecase` / `alt` | In `par` |
+| Statement | Top level | In `group` | In `usecase` / `alt` / `section` | In `par` |
 |---|---|---|---|---|
 | `title` | ✓ | | | |
 | `import` | ✓ | | | |
@@ -110,11 +111,14 @@ size-unit    = "B" | "KB" | "MB" | "GB" | "TB" ;
 | `usecase` | ✓ | | | |
 | `par` | | | ✓ | |
 | `alt` | | | ✓ | |
+| `section` | | | ✓ | |
 | `traffic`, `requirements`, `capacity`, `entity`, `decision`, `test` | ✓ | | | |
 
 ## Notes
 
 - `-x` is only valid as a step.
+- `section` is a keyword only as `section "Name" {` (or `section Name {`);
+  elsewhere it is an ordinary id. See [Sections](USE-CASES.md#sections).
 - A label is read as [Use case steps](USE-CASES.md#use-case-steps)
   describes: optional `x<N>` and `~<size>` prefixes on a request, an
   optional HTTP method and path, an optional `json`, `xml` or `text`

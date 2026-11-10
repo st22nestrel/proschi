@@ -1,6 +1,6 @@
 import type { Dash, Diagram, DiagramNode } from './types';
 import { COLOR_NAMES, DASH_ARRAY, PALETTE, nodeBaseColor, tint } from './palette';
-import { buildSequence, findScenario, type SequenceMessage } from './sequence';
+import { buildSequence, findScenario, sectionedItems, sequenceMessages, type SequenceMessage } from './sequence';
 
 /**
  * Mermaid source for a diagram: a flowchart of the architecture and a sequence
@@ -78,17 +78,40 @@ export function toMermaidSequence(diagram: Diagram, useCaseId: string, scenarioI
 
   const message = (m: SequenceMessage, indent: string) =>
     `${indent}${id(m.from)}${arrow(m)}${id(m.to)}: ${escapeMermaid(m.label) || '#32;'}`;
-  for (const item of sequence.items) {
+  // A `section` is a shaded `rect` with its name in a note over the lifelines its messages use.
+  const order = new Map(sequence.participants.map((p, i) => [p.id, i]));
+  const sectioned = sectionedItems(sequence.items);
+  sectioned.forEach((entry, at) => {
+    const indent = '  '.repeat(entry.depth + 1);
+    if (entry.kind === 'open') {
+      const inside: SequenceMessage[] = [];
+      for (let i = at + 1; i < sectioned.length; i++) {
+        const next = sectioned[i];
+        if (next.kind === 'close' && next.depth === entry.depth) break;
+        if (next.kind === 'item') inside.push(...sequenceMessages([next.item]));
+      }
+      const used = inside.flatMap((m) => [order.get(m.from) ?? 0, order.get(m.to) ?? 0]);
+      const from = sequence.participants[Math.min(...used)];
+      const to = sequence.participants[Math.max(...used)];
+      lines.push(`${indent}rect rgba(127, 127, 127, 0.1)`);
+      if (from && to) lines.push(`${indent}  Note over ${from === to ? id(from.id) : `${id(from.id)},${id(to.id)}`}: ${escapeMermaid(entry.section.name)}`);
+      return;
+    }
+    if (entry.kind === 'close') {
+      lines.push(`${indent}end`);
+      return;
+    }
+    const item = entry.item;
     if (item.kind === 'message') {
-      lines.push(message(item.message, '  '));
-      continue;
+      lines.push(message(item.message, indent));
+      return;
     }
     item.branches.forEach((branch, i) => {
-      lines.push(i === 0 ? '  par' : '  and');
-      branch.forEach((m) => lines.push(message(m, '    ')));
+      lines.push(`${indent}${i === 0 ? 'par' : 'and'}`);
+      branch.forEach((m) => lines.push(message(m, `${indent}  `)));
     });
-    lines.push('  end');
-  }
+    lines.push(`${indent}end`);
+  });
   return lines.join('\n') + '\n';
 }
 

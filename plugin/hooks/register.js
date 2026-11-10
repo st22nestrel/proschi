@@ -1183,6 +1183,94 @@ function accessOf(httpMethod, label) {
   return word && WRITE_VERBS.includes(word.toUpperCase()) ? "write" : "read";
 }
 
+// ../frontend/src/dsl/sequence.ts
+var PAYLOAD_LIMIT = 40;
+function shorten(text, max = PAYLOAD_LIMIT) {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}\u2026` : flat;
+}
+function requestLabel(step) {
+  const name = !step.httpMethod && step.stepName === `${step.fromServiceId} \u2192 ${step.toServiceId}` ? "" : step.stepName;
+  return [name, step.description, step.requestBody && shorten(step.requestBody)].filter(Boolean).join(" ");
+}
+function responseLabel(step) {
+  return [step.statusCode, step.responseBody && shorten(step.responseBody)].filter((p) => p !== void 0 && p !== "").join(" ");
+}
+function hasResponse(step) {
+  return !step.failed && (!!step.responseLoc || step.statusCode !== void 0 || !!step.responseBody);
+}
+function request(step) {
+  return {
+    kind: "request",
+    from: step.fromServiceId,
+    to: step.toServiceId,
+    number: step.stepOrder + 1,
+    label: requestLabel(step),
+    async: step.executionType !== "SYNC_REQUEST_RESPONSE",
+    failed: !!step.failed,
+    error: !!step.failed,
+    sections: step.sections ?? [],
+    step
+  };
+}
+function response(step) {
+  return {
+    kind: "response",
+    from: step.toServiceId,
+    to: step.fromServiceId,
+    number: step.stepOrder + 1,
+    label: responseLabel(step),
+    async: false,
+    failed: false,
+    error: (step.statusCode ?? 0) >= 400,
+    status: step.statusCode,
+    sections: step.responseSections ?? step.sections ?? [],
+    step
+  };
+}
+function buildSequence(useCase, scenario, nodes = []) {
+  const items = [];
+  const stack = [];
+  const emit = (message) => items.push({ kind: "message", message });
+  const unwindFor = (from) => {
+    const depth = stack.map((s) => s.toServiceId).lastIndexOf(from);
+    while (stack.length > depth + 1) emit(response(stack.pop()));
+  };
+  const steps = scenario.steps;
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step.parallelGroup === void 0) {
+      unwindFor(step.fromServiceId);
+      emit(request(step));
+      if (hasResponse(step)) stack.push(step);
+      continue;
+    }
+    const group = [];
+    while (i < steps.length && steps[i].parallelGroup === step.parallelGroup) group.push(steps[i++]);
+    i--;
+    unwindFor(step.fromServiceId);
+    items.push({ kind: "par", branches: group.map((s) => hasResponse(s) ? [request(s), response(s)] : [request(s)]) });
+  }
+  while (stack.length) emit(response(stack.pop()));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const participants = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = byId.get(id);
+    participants.push({ id, name: node?.name ?? id, tech: node && !node.implicit ? node.techStack : void 0 });
+  };
+  for (const step of steps) {
+    add(step.fromServiceId);
+    add(step.toServiceId);
+  }
+  return { useCase, scenario, participants, items, condition: scenario.condition || void 0 };
+}
+function sequenceMessages(items) {
+  return items.flatMap((item) => item.kind === "message" ? [item.message] : item.branches.flat());
+}
+
 // ../frontend/src/dsl/palette.ts
 var PALETTE = {
   gray: "#6b7280",
@@ -1320,6 +1408,8 @@ var Parser = class _Parser {
   diagnostics = [];
   /** Warnings reported so far (see `warning`). */
   warned = /* @__PURE__ */ new Set();
+  /** Responses already reported as drawn away from where they are written. */
+  movedResponses = /* @__PURE__ */ new Set();
   nodes = /* @__PURE__ */ new Map();
   edges = [];
   /** Connections so far per `from->to`, for the ids of repeated ones. */
@@ -1411,7 +1501,7 @@ var Parser = class _Parser {
       i = this.parseLine(i);
     }
     for (const frame2 of this.stack) {
-      const what = frame2.kind === "group" ? `group '${frame2.id}'` : frame2.kind === "usecase" ? `usecase '${frame2.useCase.name}'` : frame2.kind === "alt" ? `alt '${frame2.name}'` : frame2.kind === "par" ? "par block" : frame2.kind === "system" ? `system '${frame2.system.id}'` : frame2.kind === "stub" ? `the capacity of system '${frame2.system.id}'` : sectionName(frame2);
+      const what = frame2.kind === "group" ? `group '${frame2.id}'` : frame2.kind === "usecase" ? `usecase '${frame2.useCase.name}'` : frame2.kind === "alt" ? `alt '${frame2.name}'` : frame2.kind === "par" ? "par block" : frame2.kind === "steps" ? `section '${frame2.section.name}'` : frame2.kind === "system" ? `system '${frame2.system.id}'` : frame2.kind === "stub" ? `the capacity of system '${frame2.system.id}'` : sectionName(frame2);
       this.error(`Missing } to close ${what}`, frame2.loc);
       if (frame2.kind === "system") this.finishSystem(frame2);
     }
@@ -1486,6 +1576,11 @@ var Parser = class _Parser {
         break;
       case "alt":
         this.parseAlt(tokens, line);
+        break;
+      // A keyword only as `section "Name" {`, so a node may still be called section.
+      case "section":
+        if ((second?.kind === "string" || second?.kind === "ident") && tokens[tokens.length - 1].kind === "lbrace") this.parseStepSection(tokens, line);
+        else this.parseNode(tokens, line);
         break;
       case "import":
         this.parseImport(tokens, line);
@@ -2033,7 +2128,7 @@ var Parser = class _Parser {
   parseAlt(tokens, line) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== "usecase" && top?.kind !== "alt") {
+    if (top?.kind !== "usecase" && top?.kind !== "alt" && top?.kind !== "steps") {
       this.error(top?.kind === "par" ? "alt blocks cannot be inside a par block" : "alt is only allowed inside a usecase", this.locOf(keyword, line));
       return;
     }
@@ -2064,7 +2159,7 @@ var Parser = class _Parser {
       this.stack.push({ kind: "section", section: "test", discard: true, skipped: `alt '${nameToken.value}'`, loc: loc2 });
       return;
     }
-    const owner = top.body;
+    const owner = this.currentBody();
     let set = owner.openAlt;
     if (!set) {
       set = { kind: "alt", branches: [] };
@@ -2080,11 +2175,42 @@ var Parser = class _Parser {
   closeFrame() {
     const frame2 = this.stack.pop();
     if (frame2?.kind === "alt") frame2.owner.openAlt = frame2.set;
+    if (frame2?.kind === "steps") {
+      this.currentBody().openAlt = void 0;
+      if (frame2.steps === 0) this.warning(`Section '${frame2.section.name}' has no steps`, frame2.section.loc);
+    }
+  }
+  /**
+   * `section "Name" {`: names the run of steps in it, e.g. the part of a
+   * participant that performs them. Sections nest and may hold `par` and
+   * `alt` blocks; they only label steps, so the steps, their numbers and the
+   * scenarios are the same as without them.
+   */
+  parseStepSection(tokens, line) {
+    const keyword = tokens[0];
+    const nameToken = tokens[1];
+    const top = this.top();
+    const skip = (message, at = keyword) => {
+      const loc2 = this.locOf(at, line);
+      this.error(message, loc2);
+      this.stack.push({ kind: "section", section: "test", discard: true, skipped: `section '${nameToken.value}'`, loc: loc2 });
+    };
+    if (top?.kind === "par") return skip("section blocks cannot be inside a par block; put the par block inside the section");
+    if (top?.kind !== "usecase" && top?.kind !== "alt" && top?.kind !== "steps") return skip("section is only allowed inside a usecase");
+    if (tokens.length > 3) return skip(`Unexpected ${describe(tokens[2])}; write section "Name" {`, tokens[2]);
+    const loc = this.locOf(nameToken, line);
+    if (!nameToken.value.trim()) return skip('A section needs a name, e.g. section "Auth" {');
+    this.currentBody().openAlt = void 0;
+    this.stack.push({ kind: "steps", section: { name: nameToken.value.trim(), loc }, steps: 0, loc });
+  }
+  /** The `section` blocks around the current line, outermost first. */
+  openSections() {
+    return this.stack.flatMap((f) => f.kind === "steps" ? [f.section] : []);
   }
   parsePar(tokens, line) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== "usecase" && top?.kind !== "alt") {
+    if (top?.kind !== "usecase" && top?.kind !== "alt" && top?.kind !== "steps") {
       this.error(top?.kind === "par" ? "par blocks cannot be nested" : "par is only allowed inside a usecase", this.locOf(keyword, line));
       return;
     }
@@ -2093,7 +2219,7 @@ var Parser = class _Parser {
       return;
     }
     this.expectEnd(tokens, 2, line);
-    top.body.openAlt = void 0;
+    this.currentBody().openAlt = void 0;
     const useCase = this.currentUseCase();
     useCase.parCount++;
     this.stack.push({ kind: "par", group: useCase.parCount, loc: this.locOf(keyword, line) });
@@ -2197,7 +2323,7 @@ var Parser = class _Parser {
     const toRef = { id: to, loc: this.locOf(toToken, line) };
     this.references.push({ id: from, loc: this.locOf(fromToken, line) }, toRef);
     const top = this.top();
-    const inUseCase = top?.kind === "usecase" || top?.kind === "alt" || top?.kind === "par";
+    const inUseCase = top?.kind === "usecase" || top?.kind === "alt" || top?.kind === "par" || top?.kind === "steps";
     if (tagToken && inUseCase) {
       this.error("Tags style connections in the architecture, not use case steps", this.locOf(tagToken, line));
       return lastLine;
@@ -2206,6 +2332,8 @@ var Parser = class _Parser {
       const body = this.currentBody();
       body.openAlt = void 0;
       const prefixes = arrow === "-->" ? { rest: label } : this.readLabelPrefixes(label, labelToken, line);
+      const sections = this.openSections();
+      for (const frame2 of this.stack) if (frame2.kind === "steps") frame2.steps++;
       body.items.push({
         kind: "step",
         step: {
@@ -2214,6 +2342,7 @@ var Parser = class _Parser {
           arrow,
           label: prefixes.rest,
           parallelGroup: top.kind === "par" ? top.group : void 0,
+          ...sections.length ? { sections } : {},
           ...prefixes.multiplier !== void 0 ? { multiplier: prefixes.multiplier } : {},
           ...prefixes.sizeBytes !== void 0 ? { sizeBytes: prefixes.sizeBytes } : {},
           loc
@@ -3124,6 +3253,7 @@ var Parser = class _Parser {
         loc: path.locs.at(-1) ?? useCase.loc
       };
     });
+    for (const scenario of scenarios) this.checkResponseOrder(useCase, scenario);
     const steps = scenarios[0]?.steps ?? [];
     const entry = steps[0];
     return {
@@ -3150,6 +3280,7 @@ var Parser = class _Parser {
         }
         answered.add(request2);
         request2.responseLoc = step.loc;
+        if (!sameSections(step.sections, request2.sections)) request2.responseSections = step.sections ?? [];
         if (steps.length > steps.indexOf(request2) + 1 && !(step.parallelGroup !== void 0 && step.parallelGroup === request2.parallelGroup)) {
           request2.deferredResponse = { after: steps.length, ...step.parallelGroup !== void 0 ? { group: step.parallelGroup } : {} };
         }
@@ -3193,7 +3324,8 @@ var Parser = class _Parser {
         ...step.sizeBytes !== void 0 ? { sizeBytes: step.sizeBytes } : {},
         access: accessOf(label.method, step.label),
         ...port !== void 0 ? { toPort: port } : {},
-        ...fromPort !== void 0 ? { fromPort } : {}
+        ...fromPort !== void 0 ? { fromPort } : {},
+        ...step.sections ? { sections: step.sections } : {}
       });
     }
     return steps;
@@ -3208,6 +3340,58 @@ var Parser = class _Parser {
     if (this.edges.length === 0 || a === b || this.connected.has(`${a}|${b}`)) return;
     const [from, to] = step.arrow === "-->" ? [b, a] : [a, b];
     this.warning(`No connection between '${from}' and '${to}' in the architecture; add '${from} -> ${to}'`, step.loc);
+  }
+  /**
+   * Warns when the sequence diagram draws a `-->` in other `section` frames
+   * than where it is written. Responses are placed by the call stack: a callee
+   * answers once its own calls are done, and open calls are answered before
+   * their caller sends again. Requests are drawn in the order written, so a
+   * response moves when a request written after it is drawn before it, or one
+   * written before it is drawn after it. Only moves past requests in other
+   * sections are reported: those split a frame or reorder the frames, while a
+   * move inside one run of sections changes no frame.
+   */
+  checkResponseOrder(useCase, scenario) {
+    const before2 = (a, b) => (a.file ?? "") === (b.file ?? "") && (a.line < b.line || a.line === b.line && a.col < b.col);
+    const path = (sections) => sections.length ? `section '${sections.map((s) => s.name).join(" \u203A ")}'` : "no section";
+    const drawn = [];
+    for (const item of buildSequence(useCase, scenario).items) {
+      if (item.kind === "par") {
+        const first = item.branches[0]?.[0]?.step;
+        if (first?.loc) drawn.push({ request: true, loc: first.loc, name: "the par block", sections: first.sections ?? [] });
+        continue;
+      }
+      const { message } = item;
+      if (message.kind === "request") {
+        if (message.step.loc) drawn.push({ request: true, loc: message.step.loc, name: `'${message.step.stepName}'`, sections: message.sections });
+      } else if (message.step.responseLoc) drawn.push({ request: false, loc: message.step.responseLoc, step: message.step, sections: message.sections });
+    }
+    drawn.forEach((r, i) => {
+      if (r.request) return;
+      const key = `${r.loc.file ?? ""}
+${r.loc.line}
+${r.loc.col}`;
+      if (this.movedResponses.has(key)) return;
+      const elsewhere = (m) => m.request && !sameSections(m.sections, r.sections);
+      const later = drawn.slice(0, i).filter((m) => elsewhere(m) && before2(r.loc, m.loc));
+      const earlier = drawn.slice(i + 1).filter((m) => elsewhere(m) && before2(m.loc, r.loc));
+      const { fromServiceId: caller, toServiceId: callee } = r.step;
+      if (later.length) {
+        const m = later[later.length - 1];
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn after ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${callee} answers ${caller} once its own calls are done. Move the --> below that step, or nest that step's section inside this response's section`,
+          r.loc
+        );
+      } else if (earlier.length) {
+        const m = earlier[0];
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn before ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${caller} gets the answer from ${callee} before it sends again. Move the --> above that step`,
+          r.loc
+        );
+      }
+    });
   }
   createImplicitNodes() {
     for (const ref of this.references) {
@@ -3323,6 +3507,9 @@ ${message}`;
     this.diagnostics.push({ severity: "warning", message, ...loc });
   }
 };
+function sameSections(a = [], b = []) {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
+}
 function expand(items) {
   let paths = [{ names: [], conditions: [], locs: [], steps: [] }];
   for (const item of items) {
@@ -3628,92 +3815,6 @@ function stepAccess(step) {
 function accessIn(diagram) {
   const queues = new Set(diagram.nodes.filter((n) => kindMatches(kindOf(n), "queue")).map((n) => n.id));
   return (step) => queues.has(step.toServiceId) ? "write" : stepAccess(step);
-}
-
-// ../frontend/src/dsl/sequence.ts
-var PAYLOAD_LIMIT = 40;
-function shorten(text, max = PAYLOAD_LIMIT) {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}\u2026` : flat;
-}
-function requestLabel(step) {
-  const name = !step.httpMethod && step.stepName === `${step.fromServiceId} \u2192 ${step.toServiceId}` ? "" : step.stepName;
-  return [name, step.description, step.requestBody && shorten(step.requestBody)].filter(Boolean).join(" ");
-}
-function responseLabel(step) {
-  return [step.statusCode, step.responseBody && shorten(step.responseBody)].filter((p) => p !== void 0 && p !== "").join(" ");
-}
-function hasResponse(step) {
-  return !step.failed && (!!step.responseLoc || step.statusCode !== void 0 || !!step.responseBody);
-}
-function request(step) {
-  return {
-    kind: "request",
-    from: step.fromServiceId,
-    to: step.toServiceId,
-    number: step.stepOrder + 1,
-    label: requestLabel(step),
-    async: step.executionType !== "SYNC_REQUEST_RESPONSE",
-    failed: !!step.failed,
-    error: !!step.failed,
-    step
-  };
-}
-function response(step) {
-  return {
-    kind: "response",
-    from: step.toServiceId,
-    to: step.fromServiceId,
-    number: step.stepOrder + 1,
-    label: responseLabel(step),
-    async: false,
-    failed: false,
-    error: (step.statusCode ?? 0) >= 400,
-    status: step.statusCode,
-    step
-  };
-}
-function buildSequence(useCase, scenario, nodes = []) {
-  const items = [];
-  const stack = [];
-  const emit = (message) => items.push({ kind: "message", message });
-  const unwindFor = (from) => {
-    const depth = stack.map((s) => s.toServiceId).lastIndexOf(from);
-    while (stack.length > depth + 1) emit(response(stack.pop()));
-  };
-  const steps = scenario.steps;
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    if (step.parallelGroup === void 0) {
-      unwindFor(step.fromServiceId);
-      emit(request(step));
-      if (hasResponse(step)) stack.push(step);
-      continue;
-    }
-    const group = [];
-    while (i < steps.length && steps[i].parallelGroup === step.parallelGroup) group.push(steps[i++]);
-    i--;
-    unwindFor(step.fromServiceId);
-    items.push({ kind: "par", branches: group.map((s) => hasResponse(s) ? [request(s), response(s)] : [request(s)]) });
-  }
-  while (stack.length) emit(response(stack.pop()));
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const participants = [];
-  const seen = /* @__PURE__ */ new Set();
-  const add = (id) => {
-    if (seen.has(id)) return;
-    seen.add(id);
-    const node = byId.get(id);
-    participants.push({ id, name: node?.name ?? id, tech: node && !node.implicit ? node.techStack : void 0 });
-  };
-  for (const step of steps) {
-    add(step.fromServiceId);
-    add(step.toServiceId);
-  }
-  return { useCase, scenario, participants, items, condition: scenario.condition || void 0 };
-}
-function sequenceMessages(items) {
-  return items.flatMap((item) => item.kind === "message" ? [item.message] : item.branches.flat());
 }
 
 // ../frontend/src/sim/profiles.ts

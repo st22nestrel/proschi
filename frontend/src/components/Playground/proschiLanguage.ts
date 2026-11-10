@@ -17,7 +17,7 @@ interface LexState {
   inLegend?: boolean;
 }
 
-const KEYWORDS = /^(title|import|group|usecase|par|alt|pos|color|critical)\b/;
+const KEYWORDS = /^(title|import|group|usecase|par|alt|section(?=\s+["\w])|pos|color|critical)\b/;
 /** The palette of `color <name>` (dsl/palette.ts). */
 const COLOR_NAME = new RegExp(`^(?:${COLOR_NAMES.join('|')})\\b`);
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})(?![\w])/;
@@ -144,6 +144,7 @@ const keywordOptions: Completion[] = [
   { label: 'usecase', type: 'keyword', apply: 'usecase "', detail: 'usecase "Name" { … }' },
   { label: 'par', type: 'keyword', apply: 'par {', detail: 'parallel steps' },
   { label: 'alt', type: 'keyword', apply: 'alt "', detail: 'alt "Scenario" { … }' },
+  { label: 'section', type: 'keyword', apply: 'section "', detail: 'section "Name" { steps }' },
   snippetCompletion('legend {\n\t${tag} "${What it means}" ${blue}\n}', { label: 'legend', type: 'keyword', detail: 'styles that .tag applies' }),
   // Layout hints (docs/STYLING.md, "Steering the layout").
   snippetCompletion('direction ${right}', { label: 'direction', type: 'keyword', detail: 'down, right, up or left' }),

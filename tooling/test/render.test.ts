@@ -13,6 +13,7 @@ import { techIcon } from '../src/render/icons';
 import { PALETTE, tint } from '../../frontend/src/dsl/palette';
 import { SYSTEM_SIZE } from '../../frontend/src/dsl/autoLayout';
 import { COLORS, esc, fit, textWidth } from '../src/render/svg';
+import { getTheme } from '../src/render/theme';
 
 async function capture(argv: string[]) {
   const out: string[] = [];
@@ -399,6 +400,59 @@ usecase "Create order" {
     const [reply] = stepGroups(svg, 'response');
     expect(reply).toContain('stroke-dasharray="6 4"');
     expect(reply).not.toContain('<text');
+  });
+
+  it('draws section frames with their names, nested and inset, behind the messages in both themes', () => {
+    const d = parse(
+      [
+        'usecase "U" {',
+        '  section "PRE-REQUEST" {',
+        '    section "root.yml before-request" {',
+        '      a -> a : guard',
+        '      a -> b : GET /x',
+        '      b --> a : 200',
+        '    }',
+        '  }',
+        '  section "TESTS" {',
+        '    par {',
+        '      a -> b : GET /y',
+        '      a -> c : GET /z',
+        '    }',
+        '  }',
+        '  a -> a : report',
+        '}',
+      ].join('\n'),
+    ).diagram;
+    for (const theme of ['sketch', 'classic'] as const) {
+      const svg = renderSequenceSvg(d, d.useCases[0], d.useCases[0].scenarios[0], '', getTheme(theme));
+      expect(XMLValidator.validate(svg)).toBe(true);
+      const frames = [...svg.matchAll(/<rect data-kind="section" data-section="([^"]+)" x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/g)].map((m) => ({
+        name: m[1],
+        x: Number(m[2]),
+        y: Number(m[3]),
+        w: Number(m[4]),
+        h: Number(m[5]),
+      }));
+      expect(frames.map((f) => f.name)).toEqual(['PRE-REQUEST', 'TESTS', 'root.yml before-request']);
+      const [pre, tests, root] = frames;
+      // The inner frame sits inside the outer one, inset on both sides, and the next section starts below.
+      expect(root.x).toBeGreaterThan(pre.x);
+      expect(root.x + root.w).toBeLessThan(pre.x + pre.w);
+      expect(root.y).toBeGreaterThan(pre.y);
+      expect(root.y + root.h).toBeLessThan(pre.y + pre.h);
+      expect(tests.y).toBeGreaterThan(pre.y + pre.h);
+      // Titles are drawn after the lifelines and before the messages, so nothing crosses them.
+      const titles = [...svg.matchAll(/<g data-kind="section-title">[\s\S]*?<text[^>]*>([^<]*)<\/text>/g)].map((m) => m[1]);
+      expect(titles).toEqual(['PRE-REQUEST', 'TESTS', 'root.yml before-request']);
+      expect(svg.lastIndexOf('data-participant')).toBeLessThan(svg.indexOf('data-kind="section-title"'));
+      expect(svg.lastIndexOf('data-kind="section-title"')).toBeLessThan(svg.indexOf('data-step='));
+      // The par region inside TESTS is inset like a nested section; the last step is outside every frame.
+      const par = /<g data-kind="par">\n<rect x="([\d.]+)" y="([\d.]+)"/.exec(svg)!;
+      expect(Number(par[1])).toBe(root.x);
+      expect(Number(par[2])).toBeGreaterThan(tests.y);
+      const report = stepGroups(svg, 'request').at(-1)!;
+      expect(Number(/<path d="M[\d.]+,([\d.]+)/.exec(report)![1])).toBeGreaterThan(tests.y + tests.h);
+    }
   });
 
   it('estimates and fits text', () => {

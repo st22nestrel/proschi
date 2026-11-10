@@ -5,6 +5,7 @@ import { endpointGroupKey } from './paths';
 import { DATA_STORE_KINDS, KINDS, TYPE_OF_KIND, isDataStore, isKind, kindFromName, kindOf } from './kinds';
 import { parseQuantity } from './quantity';
 import { accessOf } from './access';
+import { buildSequence } from './sequence';
 import { COLOR_NAMES, editDistance, resolveColor, suggestColor } from './palette';
 import type {
   FlowStep,
@@ -39,6 +40,7 @@ import type {
   ResolvedImport,
   Selector,
   SourceLoc,
+  StepSection,
   SystemEntry,
   SystemStub,
   TrafficEntry,
@@ -52,6 +54,8 @@ interface RawStep {
   arrow: Arrow;
   label: string;
   parallelGroup?: number;
+  /** The `section` blocks the line is in, outermost first; absent when none. */
+  sections?: StepSection[];
   /** `x200` at the start of the label (§7.3). */
   multiplier?: number;
   /** `~2MB` at the start of the label, in bytes (§7.3). */
@@ -88,9 +92,19 @@ type Frame =
   | { kind: 'usecase'; useCase: DiagramUseCase; body: Container; parCount: number; loc: SourceLoc }
   | { kind: 'alt'; name: string; body: Container; owner: Container; set: Item & { kind: 'alt' }; loc: SourceLoc }
   | { kind: 'par'; group: number; loc: SourceLoc }
+  | StepSectionFrame
   | SystemFrame
   | StubFrame
   | SectionFrame;
+
+/** A `section "Name" {` inside a use case: labels the steps in it, and holds none of its own. */
+interface StepSectionFrame {
+  kind: 'steps';
+  section: StepSection;
+  /** Steps written in it, nested sections included; an empty one is reported when it closes. */
+  steps: number;
+  loc: SourceLoc;
+}
 
 /** A multi-line `capacity {` inside a system. */
 interface StubFrame {
@@ -224,6 +238,8 @@ class Parser {
   private readonly diagnostics: Diagnostic[] = [];
   /** Warnings reported so far (see `warning`). */
   private readonly warned = new Set<string>();
+  /** Responses already reported as drawn away from where they are written. */
+  private readonly movedResponses = new Set<string>();
   private readonly nodes = new Map<string, DiagramNode>();
   private readonly edges: DiagramEdge[] = [];
   /** Connections so far per `from->to`, for the ids of repeated ones. */
@@ -335,11 +351,13 @@ class Parser {
               ? `alt '${frame.name}'`
               : frame.kind === 'par'
                 ? 'par block'
-                : frame.kind === 'system'
-                  ? `system '${frame.system.id}'`
-                  : frame.kind === 'stub'
-                    ? `the capacity of system '${frame.system.id}'`
-                    : sectionName(frame);
+                : frame.kind === 'steps'
+                  ? `section '${frame.section.name}'`
+                  : frame.kind === 'system'
+                    ? `system '${frame.system.id}'`
+                    : frame.kind === 'stub'
+                      ? `the capacity of system '${frame.system.id}'`
+                      : sectionName(frame);
       this.error(`Missing } to close ${what}`, frame.loc);
       if (frame.kind === 'system') this.finishSystem(frame);
     }
@@ -426,6 +444,11 @@ class Parser {
         break;
       case 'alt':
         this.parseAlt(tokens, line);
+        break;
+      // A keyword only as `section "Name" {`, so a node may still be called section.
+      case 'section':
+        if ((second?.kind === 'string' || second?.kind === 'ident') && tokens[tokens.length - 1].kind === 'lbrace') this.parseStepSection(tokens, line);
+        else this.parseNode(tokens, line);
         break;
       case 'import':
         this.parseImport(tokens, line);
@@ -1010,7 +1033,7 @@ class Parser {
   private parseAlt(tokens: Token[], line: number) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== 'usecase' && top?.kind !== 'alt') {
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') {
       this.error(top?.kind === 'par' ? 'alt blocks cannot be inside a par block' : 'alt is only allowed inside a usecase', this.locOf(keyword, line));
       return;
     }
@@ -1046,7 +1069,7 @@ class Parser {
     }
 
     // Alt blocks that follow each other directly are alternatives to one another.
-    const owner = top.body;
+    const owner = this.currentBody()!;
     let set = owner.openAlt;
     if (!set) {
       set = { kind: 'alt', branches: [] };
@@ -1063,12 +1086,47 @@ class Parser {
   private closeFrame() {
     const frame = this.stack.pop();
     if (frame?.kind === 'alt') frame.owner.openAlt = frame.set;
+    if (frame?.kind === 'steps') {
+      // An alt after the section starts scenarios of its own, as after a step.
+      this.currentBody()!.openAlt = undefined;
+      if (frame.steps === 0) this.warning(`Section '${frame.section.name}' has no steps`, frame.section.loc);
+    }
+  }
+
+  /**
+   * `section "Name" {`: names the run of steps in it, e.g. the part of a
+   * participant that performs them. Sections nest and may hold `par` and
+   * `alt` blocks; they only label steps, so the steps, their numbers and the
+   * scenarios are the same as without them.
+   */
+  private parseStepSection(tokens: Token[], line: number) {
+    const keyword = tokens[0];
+    const nameToken = tokens[1];
+    const top = this.top();
+    const skip = (message: string, at = keyword) => {
+      const loc = this.locOf(at, line);
+      this.error(message, loc);
+      // Skipped with its contents, so its `}` does not close the enclosing block.
+      this.stack.push({ kind: 'section', section: 'test', discard: true, skipped: `section '${nameToken.value}'`, loc });
+    };
+    if (top?.kind === 'par') return skip('section blocks cannot be inside a par block; put the par block inside the section');
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') return skip('section is only allowed inside a usecase');
+    if (tokens.length > 3) return skip(`Unexpected ${describe(tokens[2])}; write section "Name" {`, tokens[2]);
+    const loc = this.locOf(nameToken, line);
+    if (!nameToken.value.trim()) return skip('A section needs a name, e.g. section "Auth" {');
+    this.currentBody()!.openAlt = undefined;
+    this.stack.push({ kind: 'steps', section: { name: nameToken.value.trim(), loc }, steps: 0, loc });
+  }
+
+  /** The `section` blocks around the current line, outermost first. */
+  private openSections(): StepSection[] {
+    return this.stack.flatMap((f) => (f.kind === 'steps' ? [f.section] : []));
   }
 
   private parsePar(tokens: Token[], line: number) {
     const keyword = tokens[0];
     const top = this.top();
-    if (top?.kind !== 'usecase' && top?.kind !== 'alt') {
+    if (top?.kind !== 'usecase' && top?.kind !== 'alt' && top?.kind !== 'steps') {
       this.error(top?.kind === 'par' ? 'par blocks cannot be nested' : 'par is only allowed inside a usecase', this.locOf(keyword, line));
       return;
     }
@@ -1077,7 +1135,7 @@ class Parser {
       return;
     }
     this.expectEnd(tokens, 2, line);
-    top.body.openAlt = undefined;
+    this.currentBody()!.openAlt = undefined;
     const useCase = this.currentUseCase()!;
     useCase.parCount++;
     this.stack.push({ kind: 'par', group: useCase.parCount, loc: this.locOf(keyword, line) });
@@ -1192,7 +1250,7 @@ class Parser {
     this.references.push({ id: from, loc: this.locOf(fromToken, line) }, toRef);
 
     const top = this.top();
-    const inUseCase = top?.kind === 'usecase' || top?.kind === 'alt' || top?.kind === 'par';
+    const inUseCase = top?.kind === 'usecase' || top?.kind === 'alt' || top?.kind === 'par' || top?.kind === 'steps';
     if (tagToken && inUseCase) {
       this.error('Tags style connections in the architecture, not use case steps', this.locOf(tagToken, line));
       return lastLine;
@@ -1202,6 +1260,8 @@ class Parser {
       body.openAlt = undefined;
       // Fan-out and payload size prefixes belong to requests; a response label is read as before.
       const prefixes = arrow === '-->' ? { rest: label } : this.readLabelPrefixes(label, labelToken!, line);
+      const sections = this.openSections();
+      for (const frame of this.stack) if (frame.kind === 'steps') frame.steps++;
       body.items.push({
         kind: 'step',
         step: {
@@ -1210,6 +1270,7 @@ class Parser {
           arrow,
           label: prefixes.rest,
           parallelGroup: top.kind === 'par' ? top.group : undefined,
+          ...(sections.length ? { sections } : {}),
           ...(prefixes.multiplier !== undefined ? { multiplier: prefixes.multiplier } : {}),
           ...(prefixes.sizeBytes !== undefined ? { sizeBytes: prefixes.sizeBytes } : {}),
           loc,
@@ -2178,6 +2239,8 @@ class Parser {
       };
     });
 
+    for (const scenario of scenarios) this.checkResponseOrder(useCase, scenario);
+
     const steps = scenarios[0]?.steps ?? [];
     const entry = steps[0];
     return {
@@ -2208,6 +2271,7 @@ class Parser {
         }
         answered.add(request);
         request.responseLoc = step.loc;
+        if (!sameSections(step.sections, request.sections)) request.responseSections = step.sections ?? [];
         // Written after other steps (and not inside the request's own `par`): the response plays there.
         if (steps.length > steps.indexOf(request) + 1 && !(step.parallelGroup !== undefined && step.parallelGroup === request.parallelGroup)) {
           request.deferredResponse = { after: steps.length, ...(step.parallelGroup !== undefined ? { group: step.parallelGroup } : {}) };
@@ -2254,6 +2318,7 @@ class Parser {
         access: accessOf(label.method, step.label),
         ...(port !== undefined ? { toPort: port } : {}),
         ...(fromPort !== undefined ? { fromPort } : {}),
+        ...(step.sections ? { sections: step.sections } : {}),
       });
     }
 
@@ -2271,6 +2336,60 @@ class Parser {
     // A response travels back along the request's connection, so suggest the request direction.
     const [from, to] = step.arrow === '-->' ? [b, a] : [a, b];
     this.warning(`No connection between '${from}' and '${to}' in the architecture; add '${from} -> ${to}'`, step.loc);
+  }
+
+  /**
+   * Warns when the sequence diagram draws a `-->` in other `section` frames
+   * than where it is written. Responses are placed by the call stack: a callee
+   * answers once its own calls are done, and open calls are answered before
+   * their caller sends again. Requests are drawn in the order written, so a
+   * response moves when a request written after it is drawn before it, or one
+   * written before it is drawn after it. Only moves past requests in other
+   * sections are reported: those split a frame or reorder the frames, while a
+   * move inside one run of sections changes no frame.
+   */
+  private checkResponseOrder(useCase: DiagramUseCase, scenario: DiagramScenario) {
+    const before = (a: SourceLoc, b: SourceLoc) => (a.file ?? '') === (b.file ?? '') && (a.line < b.line || (a.line === b.line && a.col < b.col));
+    const path = (sections: StepSection[]) => (sections.length ? `section '${sections.map((s) => s.name).join(' › ')}'` : 'no section');
+    type Drawn = { request: true; loc: SourceLoc; name: string; sections: StepSection[] } | { request: false; loc: SourceLoc; step: DiagramStep; sections: StepSection[] };
+    const drawn: Drawn[] = [];
+    for (const item of buildSequence(useCase, scenario).items) {
+      if (item.kind === 'par') {
+        // A par block draws in place as one unit; its responses follow their requests inside it.
+        const first = item.branches[0]?.[0]?.step;
+        if (first?.loc) drawn.push({ request: true, loc: first.loc, name: 'the par block', sections: first.sections ?? [] });
+        continue;
+      }
+      const { message } = item;
+      if (message.kind === 'request') {
+        if (message.step.loc) drawn.push({ request: true, loc: message.step.loc, name: `'${message.step.stepName}'`, sections: message.sections });
+      } else if (message.step.responseLoc) drawn.push({ request: false, loc: message.step.responseLoc, step: message.step, sections: message.sections });
+    }
+    drawn.forEach((r, i) => {
+      if (r.request) return;
+      // A response shared by several scenarios is reported once, for the first scenario that moves it.
+      const key = `${r.loc.file ?? ''}\n${r.loc.line}\n${r.loc.col}`;
+      if (this.movedResponses.has(key)) return;
+      const elsewhere = (m: Drawn) => m.request && !sameSections(m.sections, r.sections);
+      const later = drawn.slice(0, i).filter((m) => elsewhere(m) && before(r.loc, m.loc));
+      const earlier = drawn.slice(i + 1).filter((m) => elsewhere(m) && before(m.loc, r.loc));
+      const { fromServiceId: caller, toServiceId: callee } = r.step;
+      if (later.length) {
+        const m = later[later.length - 1] as Extract<Drawn, { request: true }>;
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn after ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${callee} answers ${caller} once its own calls are done. Move the --> below that step, or nest that step's section inside this response's section`,
+          r.loc,
+        );
+      } else if (earlier.length) {
+        const m = earlier[0] as Extract<Drawn, { request: true }>;
+        this.movedResponses.add(key);
+        this.warning(
+          `This response is drawn before ${m.name} (line ${m.loc.line}, ${path(m.sections)}), not where it is written: ${caller} gets the answer from ${callee} before it sends again. Move the --> above that step`,
+          r.loc,
+        );
+      }
+    });
   }
 
   private createImplicitNodes() {
@@ -2399,6 +2518,11 @@ class Parser {
     this.warned.add(key);
     this.diagnostics.push({ severity: 'warning', message, ...loc });
   }
+}
+
+/** The same `section` blocks (by where they are written), in the same order. */
+function sameSections(a: StepSection[] = [], b: StepSection[] = []): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
 }
 
 /**

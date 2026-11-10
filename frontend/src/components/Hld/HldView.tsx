@@ -1,8 +1,8 @@
-import { useMemo, type ReactNode } from 'react';
+import { Fragment, useMemo, type ReactNode } from 'react';
 import type { Edge, Node } from 'reactflow';
 import { AlertTriangle, CheckCircle2, Download, MinusCircle, XCircle } from 'lucide-react';
 import type { Diagram } from '../../dsl';
-import { buildSequence, findScenario, sequenceMessages } from '../../dsl/sequence';
+import { buildSequence, findScenario, sectionHeadings, sequenceMessages } from '../../dsl/sequence';
 import {
   HOT_UTILIZATION,
   LOAD_HEADINGS,
@@ -446,16 +446,21 @@ function SequenceList({ doc, useCaseId, scenarioId }: { doc: HldDocument; useCas
   if (!found) return null;
   const sequence = buildSequence(found.useCase, found.scenario, doc.diagram.nodes);
   const name = (id: string) => sequence.participants.find((p) => p.id === id)?.name ?? id;
+  const messages = sequenceMessages(sequence.items);
+  const headings = sectionHeadings(messages);
   return (
     <ol className="mt-2 space-y-0.5 text-xs">
-      {sequenceMessages(sequence.items).map((m, i) => (
-        <li key={i} className={`flex gap-2 ${m.error ? 'text-red-700 dark:text-red-300' : 'text-ink/85'} ${m.kind === 'response' ? 'pl-4 text-muted' : ''}`}>
-          <span className="w-4 shrink-0 text-right tabular-nums text-muted">{m.kind === 'request' ? m.number : ''}</span>
-          <span>
-            {name(m.from)} {m.kind === 'response' ? '⇠' : m.failed ? '✗→' : m.async ? '⇢' : '→'} {name(m.to)}
-            {m.label && <code className="ml-1.5 text-muted">{m.label}</code>}
-          </span>
-        </li>
+      {messages.map((m, i) => (
+        <Fragment key={i}>
+          {headings[i] && <li className="pt-1 pl-6 font-semibold text-muted">{headings[i]}</li>}
+          <li className={`flex gap-2 ${m.error ? 'text-red-700 dark:text-red-300' : 'text-ink/85'} ${m.kind === 'response' ? 'pl-4 text-muted' : ''}`}>
+            <span className="w-4 shrink-0 text-right tabular-nums text-muted">{m.kind === 'request' ? m.number : ''}</span>
+            <span>
+              {name(m.from)} {m.kind === 'response' ? '⇠' : m.failed ? '✗→' : m.async ? '⇢' : '→'} {name(m.to)}
+              {m.label && <code className="ml-1.5 text-muted">{m.label}</code>}
+            </span>
+          </li>
+        </Fragment>
       ))}
     </ol>
   );

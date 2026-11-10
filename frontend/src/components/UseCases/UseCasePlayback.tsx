@@ -36,6 +36,12 @@ const nodeTypes = {
   systemNode: SystemNode,
 };
 
+/** `PRE-REQUEST › root.yml`: the sections a step (or its response) is written in, if any. */
+function sectionPath(step: FlowStep, response: boolean): string | undefined {
+  const sections = response ? (step.responseSections ?? step.sections) : step.sections;
+  return sections?.length ? sections.map((s) => s.name).join(' › ') : undefined;
+}
+
 /** How a body format reads in the step card. */
 const FORMAT_LABEL: Record<FlowStep['responseFormat'], string> = { JSON: 'JSON', XML: 'XML', FREE_TEXT: 'Text' };
 
@@ -292,6 +298,7 @@ export function UseCasePlayback({
                       {response ? '↩' : steps.indexOf(step) + 1}
                     </div>
                     <div className="flex-1 min-w-0">
+                      {sectionPath(step, response) && <p className="text-xs font-semibold text-muted break-words">{sectionPath(step, response)}</p>}
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="font-semibold text-ink break-words">{response ? `Response to ${step.stepName}` : step.stepName}</h3>
                         {step.failed && (

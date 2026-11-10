@@ -134,8 +134,8 @@
       }
     },
     "keyword": {
-      "comment": "Statement keywords start a line, or follow } as in `} alt \"Next\" {`.",
-      "match": "^\\s*(?:(\\})\\s*)?(title|group|usecase|par|alt)\\b",
+      "comment": "Statement keywords start a line, or follow } as in `} alt \"Next\" {`; section only before its name, so a node may be called section.",
+      "match": "^\\s*(?:(\\})\\s*)?(title|group|usecase|par|alt|section(?=\\s+[\"\\w]))\\b",
       "captures": {
         "1": {
           "name": "punctuation.section.block.end.proschi"
