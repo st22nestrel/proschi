@@ -1,6 +1,6 @@
 {
   "name": "proschi",
-  "version": "0.16.1-themes.2",
+  "version": "0.16.1-themes.3",
   "description": "Command-line checker and language server for Proschi architecture diagrams",
   "license": "MIT",
   "repository": {
