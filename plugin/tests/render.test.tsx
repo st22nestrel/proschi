@@ -277,6 +277,126 @@ test('Focus opens the block in a focused pane that Esc closes, with its player a
   await p.unmount()
 })
 
+test('↓ Inline moves the pane\'s drawing into the transcript where its player stood, and ⛶ Focus takes it back', async ($, on) => {
+  const places: string[] = []
+  const closes: string[] = []
+  const opens: string[] = []
+  mock.clock(on)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: LAYOUT, stderr: '' } }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.blit', () => ({ value: {} }))
+  on('ui.scroll', () => ({ value: {} }))
+  on('ui.open', (_, e) => {
+    opens.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', (_, e) => {
+    closes.push(e.id)
+    return { value: undefined }
+  })
+  on('ui.place', (_, e) => {
+    places.push(e.id)
+    return { value: { isPlaced: true, requestId: `row-${e.id}` } }
+  })
+  on('ui.log', () => ({ value: undefined }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+  await (await $.ui.mount(reply(FENCED))).unmount()
+  const ui = await $.ui.mount(reply(FENCED))
+  await ui.press({ key: 'play-m1:0' })
+  await ui.press({ key: 'play-m1:0' })
+  await ui.press({ key: 'next-m1:0' })
+  await ui.press({ key: 'focus-m1:0' })
+  await ui.unmount()
+
+  const p = await $.ui.mount(pane(true))
+  expect(await hotkeyOf(p, 'inline-proschi-view:0')).toBe('i')
+  await p.press({ key: 'inline-proschi-view:0' })
+  await p.unmount()
+  expect(places).toHaveLength(1)
+  expect(places[0]).toMatch(/^inline-/)
+  expect(closes).toEqual(['proschi-view'])
+
+  const id = places[0]!
+  const row = { plugin: 'proschi', component: 'Placed', requestId: `row-${id}`, surface: 'terminal', props: { id, plugin: 'proschi' } } as const
+  const placed = await $.ui.mount(row)
+  // The block, at the step the pane stood on, as its sequence diagram; no hotkeys in the transcript.
+  expect(await placed.find({ type: 'Raster', key: `q-${id}:0` })).toBeDefined()
+  expect(await placed.find({ type: 'Text', text: /^Step 2 of \d+$/ })).toBeDefined()
+  expect(await hotkeyOf(placed, `play-${id}:0`)).toBeUndefined()
+  expect(await placed.find({ key: `inline-${id}:0` })).toBeUndefined()
+  await placed.press({ key: `focus-${id}:0` })
+  expect(opens).toContain('proschi-view')
+  await placed.unmount()
+
+  // Back to the transcript with no prompt since: the row that stands takes the player again, and no second one is placed.
+  const again = await $.ui.mount(pane(true))
+  await again.press({ key: 'next-proschi-view:0' })
+  await again.press({ key: 'inline-proschi-view:0' })
+  await again.unmount()
+  expect(places).toHaveLength(1)
+  expect(closes).toEqual(['proschi-view', 'proschi-view'])
+  const back = await $.ui.mount(row)
+  expect(await back.find({ type: 'Text', text: /^Step 3 of \d+$/ })).toBeDefined()
+  await back.unmount()
+
+  // Another plugin's rows are left to it.
+  const other = await $.ui.mount({ ...row, props: { id, plugin: 'other' } })
+  expect((await other.find({ type: 'Text' }))?.text).toBe('engine')
+  await other.unmount()
+})
+
+test('↓ Inline after Focus on a block of the last response closes the pane onto that block, but places a row once a prompt followed', async ($, on) => {
+  const places: string[] = []
+  const closes: string[] = []
+  let messages = [
+    { role: 'user', text: 'draw it', toolUses: [] },
+    { role: 'assistant', text: FENCED, toolUses: [] },
+  ]
+  mock.clock(on)
+  on('process.run', () => ({ value: { exitCode: 0, stdout: LAYOUT, stderr: '' } }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.blit', () => ({ value: {} }))
+  on('ui.scroll', () => ({ value: {} }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.close', (_, e) => {
+    closes.push(e.id)
+    return { value: undefined }
+  })
+  on('ui.place', (_, e) => {
+    places.push(e.id)
+    return { value: { isPlaced: true, requestId: `row-${e.id}` } }
+  })
+  on('ui.log', () => ({ value: undefined }))
+  on('session.messages', () => ({ value: messages }))
+  await (await $.ui.mount(reply(FENCED))).unmount()
+  let ui = await $.ui.mount(reply(FENCED))
+  await ui.press({ key: 'play-m1:0' })
+  await ui.press({ key: 'play-m1:0' })
+  await ui.press({ key: 'focus-m1:0' })
+  await ui.unmount()
+
+  let p = await $.ui.mount(pane(true))
+  await p.press({ key: 'next-proschi-view:0' })
+  await p.press({ key: 'inline-proschi-view:0' })
+  await p.unmount()
+  expect(places).toEqual([])
+  expect(closes).toEqual(['proschi-view'])
+  ui = await $.ui.mount(reply(FENCED))
+  expect(await ui.find({ type: 'Text', text: /^Step 2 of \d+$/ })).toBeDefined()
+
+  // A prompt later the block belongs to an earlier response: Inline places it anew at the end.
+  messages = [...messages, { role: 'user', text: 'thanks', toolUses: [] }, { role: 'assistant', text: 'You are welcome.', toolUses: [] }]
+  await ui.press({ key: 'focus-m1:0' })
+  await ui.unmount()
+  p = await $.ui.mount(pane(true))
+  await p.press({ key: 'inline-proschi-view:0' })
+  await p.unmount()
+  expect(places).toHaveLength(1)
+})
+
 test('Play and a step bring the diagram into view, in the transcript and in the pane', async ($, on) => {
   // The harness moves no window for a plugin's $.ui.scroll: each call is refused, and the refusal, naming its target, goes to the debug log.
   // (That the scroll is issued in the press itself, before the player changes, the e2e run checks in a live session.)

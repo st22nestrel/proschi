@@ -14,7 +14,7 @@ import type { Grid } from '../../tooling/src/terminal/grid'
 import { idList, systemAt, viewError, type SystemsView } from '../../tooling/src/terminal/systems'
 import type { DiagramScenario, DiagramUseCase, FlowStep } from '../../frontend/src/dsl/types'
 import { groupByEndpoint } from '../../frontend/src/playground/useCaseGroups'
-import type { PaneSource, Player } from '../types'
+import type { PaneSource, PlacedRow, Player } from '../types'
 
 /**
  * Draws Proschi diagrams in Claude Code's terminal: ```proschi blocks in
@@ -40,9 +40,14 @@ const NO_SOURCE: PaneSource = { source: '' }
 const paneFile = atom({ plugin: 'proschi', key: 'paneFile' } as const, '')
 const paneSource = atom({ plugin: 'proschi', key: 'paneSource' } as const, NO_SOURCE)
 const players = atom({ plugin: 'proschi', key: 'player' } as const, IDLE)
+const NO_ROW: PlacedRow = {}
+/** What each row placed in the transcript (`inline-…`) draws: a file, or a block with its imports. */
+const placedRows = atom({ plugin: 'proschi', key: 'placed' } as const, NO_ROW)
+/** The prefix of the ids of the rows the plugin places in the transcript. */
+const INLINE = 'inline-'
 
 /** The pane's keys, as its Buttons' hotkeys name them; the system keys where the diagram has systems. */
-const PANE_KEYS = 'p play · n/b step · r restart · e end · v sequence/architecture · x explorer · d diagram · esc back to the prompt'
+const PANE_KEYS = 'p play · n/b step · r restart · e end · v sequence/architecture · x explorer · d diagram · i inline · esc back to the prompt'
 const SYSTEM_KEYS = 's next system · o open/close · f focus in · u back out'
 
 /** One animation frame, in ms. */
@@ -62,6 +67,10 @@ const documents = new Map<string, Document>()
 const scenes = new Map<string, Scene>()
 const sequences = new Map<string, SequenceScene>()
 const timers = new Map<string, { cancel(): void }>()
+/** Every drawing outside the pane, by its player's id, in the order first drawn: its row and what it draws (`drawnKey`). */
+const drawings = new Map<string, { requestId: string; key: string }>()
+/** How many prompts were submitted this session: a placed row keeps the count it was placed at (`PlacedRow.prompt`). */
+const prompts = atom({ plugin: 'proschi', key: 'prompts' } as const, 0)
 
 const FENCE = /^```proschi[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm
 
@@ -70,7 +79,12 @@ export function register(on: On, options: PluginOptions): void {
   icons = chosen === 'symbols' || chosen === 'none' ? chosen : 'nerd-font'
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'proschi', description: 'Proschi diagrams: /proschi view <file.proschi> shows one in a pane', argumentHint: 'view [--expand <id>,…] [--focus <id>] <file>' })
+    await $.command.register({ name: 'proschi', description: 'Proschi diagrams: /proschi view <file.proschi> shows one in a pane, or with --inline in the transcript', argumentHint: 'view [--inline] [--expand <id>,…] [--focus <id>] <file>' })
+    return next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    await update($, prompts, n => n + 1)
     return next(e)
   })
 
@@ -83,8 +97,10 @@ export function register(on: On, options: PluginOptions): void {
     const [verb, ...rest] = e.args.trim().split(/\s+/)
     const words: string[] = []
     const view: SystemsView = {}
+    let inline = false
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '--expand' || rest[i] === '--focus') {
+      if (rest[i] === '--inline') inline = true
+      else if (rest[i] === '--expand' || rest[i] === '--focus') {
         const value = rest[++i]
         if (!value || idList(value).length === 0) return { text: `Missing system id after ${rest[i - 1]}` }
         if (rest[i - 1] === '--expand') view.expanded = [...(view.expanded ?? []), ...idList(value)]
@@ -98,6 +114,10 @@ export function register(on: On, options: PluginOptions): void {
       const { diagram, errors } = parseSource(await readWithImports($, file))
       const refused = errors.length ? undefined : viewError(diagram, view)
       if (refused) return { text: refused }
+    }
+    if (inline) {
+      await placeInline($, { file }, { ...IDLE, expanded: view.expanded ?? [], ...(view.focus !== undefined ? { focus: view.focus } : {}) })
+      return { text: `Showing ${file} in the transcript.` }
     }
     stop(PANE_VIEW)
     await update($, memberOf(players, { requestId: PANE_VIEW }), () => ({ ...IDLE, expanded: view.expanded ?? [], ...(view.focus !== undefined ? { focus: view.focus } : {}) }))
@@ -151,6 +171,19 @@ export function register(on: On, options: PluginOptions): void {
     )
   })
 
+  // A drawing moved out of the pane (↓ Inline) or placed by `/proschi view --inline`: a row at the transcript's end, as wide as the transcript.
+  on('ui.render', { component: 'Placed' }, async ($, e, next) => {
+    if (e.props.plugin !== 'proschi' || !e.props.id.startsWith(INLINE)) return next(e)
+    const ui = $.ui.resolve(e)
+    if (e.surface !== 'terminal') return <ui.Text>The Proschi drawing draws in a terminal.</ui.Text>
+    const row = await read($, memberOf(placedRows, { requestId: e.props.id }))
+    if (!row.file && !row.source) return <ui.Text dimColor>Drawing…</ui.Text>
+    const source = row.file ? await readWithImports($, row.file).catch(() => undefined) : { source: row.source!, ...(row.path ? { path: row.path } : {}), ...(row.imports ? { imports: row.imports } : {}) }
+    if (!source) return <ui.Text color="red">Cannot read {row.file}.</ui.Text>
+    const view = await diagramView($, { ui, requestId: e.requestId, columns: (e.viewport?.columns ?? 120) - 4 }, `${e.props.id}:0`, source, row.file)
+    return 'error' in view ? <ui.Text color="red">{view.error}</ui.Text> : view.element
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     if (e.surface !== 'terminal') {
       const { Text } = $.ui.resolve(e)
@@ -186,7 +219,7 @@ function proschiFile(tool: string, input: unknown): string | undefined {
   return typeof path === 'string' && path.endsWith('.proschi') ? path : undefined
 }
 
-const USAGE = 'Usage: /proschi view [--expand <system>[,<system>…]] [--focus <system>] <file.proschi>'
+const USAGE = 'Usage: /proschi view [--inline] [--expand <system>[,<system>…]] [--focus <system>] <file.proschi>'
 
 const basename = (path: string) => path.split('/').pop() ?? path
 const dirname = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')))
@@ -360,6 +393,7 @@ async function diagramView($: EngineInterface, d: Draw, viewId: string, written:
     doc = loadDocument(source)
     documents.set(key, doc)
   }
+  if (d.requestId !== PANE && !drawings.has(viewId)) drawings.set(viewId, { requestId: d.requestId, key: drawnKey(file ? { file } : { source: written.source }) })
   const where = file ?? 'The diagram'
   if (doc.errors.length > 0) {
     const [first] = doc.errors
@@ -442,6 +476,7 @@ async function diagramView($: EngineInterface, d: Draw, viewId: string, written:
         <ui.Button key={`src-${viewId}`} label={roomy ? '⧉ Copy source' : '⧉ Source'} onPress={press => void copy($, press.surface, source.source, 'the Proschi source')} />
         <ui.Button key={`lnk-${viewId}`} label={roomy ? '⧉ Copy share link' : '⧉ Link'} onPress={press => void copy($, press.surface, link, 'the share link')} />
         <ui.Button key={`open-${viewId}`} label={roomy ? '↗ Open in Proschi' : '↗ Open'} variant="primary" onPress={press => void openLink($, press.surface, link)} />
+        {view.inPane && <ui.Button key={`inline-${viewId}`} label={roomy ? '↓ Inline' : '↓'} {...hotkey(view, 'i')} onPress={() => void toInline($)} />}
         {!view.inPane && <ui.Button key={`focus-${viewId}`} label="⛶ Focus" onPress={() => focus($, view, file ? basename(file) : (doc.diagram.title ?? 'diagram'), file ? { file } : { source })} />}
       </ui.Box>
     </ui.Box>
@@ -879,6 +914,77 @@ async function scroll($: EngineInterface, args: UiScrollArgs): Promise<{ deny?: 
   const moved = await $.ui.scroll(args).catch((error: unknown) => ({ deny: String(error) }))
   if (moved.deny) $.ui.log(`proschi: scroll to ${JSON.stringify(args.to)} refused: ${moved.deny}`, { to: 'debug' })
   return moved
+}
+
+let placedCount = 0
+
+/**
+ * Places a row at the transcript's end that draws `what` with `player`, as
+ * wide as the transcript, and brings it into view. The row is placed before
+ * anything is awaited, while the press or command is still the person's;
+ * what it draws follows.
+ */
+async function placeInline($: EngineInterface, what: PlacedRow | Promise<PlacedRow>, player: Player | Promise<Player>): Promise<void> {
+  const id = `${INLINE}${Date.now().toString(36)}-${++placedCount}`
+  const placing = $.ui.place({ id })
+  const stands = await player
+  await update($, memberOf(players, { requestId: `${id}:0` }), () => ({ ...stands, isPlaying: false }))
+  const drawn = { ...(await what), prompt: await read($, prompts) }
+  await update($, memberOf(placedRows, { requestId: id }), () => drawn)
+  const placed = await placing
+  if (!placed.isPlaced) $.ui.toast(`The Proschi drawing is in the transcript but not shown: ${placed.reason}`)
+  else await scroll($, { to: { requestId: placed.requestId }, block: 'start' })
+}
+
+/** What a drawing shows, to tell the same one apart wherever it stands: its file, else its block. */
+const drawnKey = (what: { file?: string; source?: string }) => (what.file ? `file:${what.file}` : `source:${(what.source ?? '').trim()}`)
+
+/**
+ * The drawing of `key` that already stands in the model's last response
+ * (what follows the last prompt), the latest drawn, if any: a row placed since
+ * that prompt, or a block or a Write or Edit of the file in its messages.
+ */
+async function inLastResponse($: EngineInterface, key: string): Promise<{ viewId: string; requestId: string } | undefined> {
+  const messages = await $.session.messages().catch(() => [])
+  const prompt = messages.findLastIndex(m => m.role === 'user' && !m.toolResults?.length)
+  const replied = messages.slice(prompt + 1).some(
+    m =>
+      m.role === 'assistant' &&
+      (m.toolUses.some(t => { const file = proschiFile(t.tool, t.input); return file !== undefined && drawnKey({ file }) === key }) ||
+        [...m.text.matchAll(FENCE)].some(f => drawnKey({ source: f[1] }) === key)),
+  )
+  const now = await read($, prompts)
+  for (const [viewId, d] of [...drawings].reverse()) {
+    if (d.key !== key) continue
+    const placed = viewId.startsWith(INLINE) ? await read($, memberOf(placedRows, { requestId: viewId.slice(0, -':0'.length) })) : undefined
+    if (placed ? placed.prompt === now : replied) return { viewId, requestId: d.requestId }
+  }
+  return undefined
+}
+
+/**
+ * Moves the pane's drawing into the transcript, where its player stood, and
+ * closes the pane. When the model's last response already draws it (Focus came
+ * from there), that drawing takes the player instead of a new row.
+ */
+function toInline($: EngineInterface): Promise<void> {
+  stop(PANE_VIEW)
+  stop(PANE)
+  const what = (async (): Promise<PlacedRow> => {
+    const file = await read($, paneFile)
+    if (file) return { file }
+    const { source, path, imports } = await read($, paneSource)
+    return { source, ...(path ? { path } : {}), ...(imports ? { imports } : {}) }
+  })()
+  const player = read($, memberOf(players, { requestId: PANE_VIEW })).then(normal)
+  return (async () => {
+    const standing = await inLastResponse($, drawnKey(await what))
+    if (!standing) return placeInline($, what, player)
+    stop(standing.viewId)
+    const stands = await player
+    await update($, memberOf(players, { requestId: standing.viewId }), () => ({ ...stands, isPlaying: false }))
+    await scroll($, { to: { requestId: standing.requestId }, block: 'start' })
+  })().then(() => $.ui.close({ id: PANE }))
 }
 
 /**

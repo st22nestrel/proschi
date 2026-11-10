@@ -23,6 +23,10 @@ export type Player = {
 /** A document the pane draws when it shows no file: a fenced block focused from a reply, with its imports. */
 export type PaneSource = { source: string; path?: string; imports?: Record<string, string> }
 
+/** What a row placed in the transcript draws: a file, read on every draw, or a block with its imports. */
+/** What a placed row draws, and how many prompts had been submitted when it was placed. */
+export type PlacedRow = { file?: string; source?: string; path?: string; imports?: Record<string, string>; prompt?: number }
+
 declare module 'claude-code' {
   interface PluginState {
     proschi: {
@@ -32,6 +36,10 @@ declare module 'claude-code' {
       paneFile: string
       /** What the pane draws while `paneFile` is empty: the block a Focus press opened. */
       paneSource: PaneSource
+      /** One per row placed in the transcript, by its id (`inline-…`). */
+      placed: StateFamily<PlacedRow>
+      /** How many prompts were submitted this session. */
+      prompts: number
     }
   }
 }

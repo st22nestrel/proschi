@@ -6901,7 +6901,10 @@ var NO_SOURCE = { source: "" };
 var paneFile = atom({ plugin: "proschi", key: "paneFile" }, "");
 var paneSource = atom({ plugin: "proschi", key: "paneSource" }, NO_SOURCE);
 var players = atom({ plugin: "proschi", key: "player" }, IDLE);
-var PANE_KEYS = "p play \xB7 n/b step \xB7 r restart \xB7 e end \xB7 v sequence/architecture \xB7 x explorer \xB7 d diagram \xB7 esc back to the prompt";
+var NO_ROW = {};
+var placedRows = atom({ plugin: "proschi", key: "placed" }, NO_ROW);
+var INLINE = "inline-";
+var PANE_KEYS = "p play \xB7 n/b step \xB7 r restart \xB7 e end \xB7 v sequence/architecture \xB7 x explorer \xB7 d diagram \xB7 i inline \xB7 esc back to the prompt";
 var SYSTEM_KEYS = "s next system \xB7 o open/close \xB7 f focus in \xB7 u back out";
 var FRAME2 = 50;
 var HINT = [
@@ -6916,12 +6919,18 @@ var documents = /* @__PURE__ */ new Map();
 var scenes = /* @__PURE__ */ new Map();
 var sequences = /* @__PURE__ */ new Map();
 var timers = /* @__PURE__ */ new Map();
+var drawings = /* @__PURE__ */ new Map();
+var prompts = atom({ plugin: "proschi", key: "prompts" }, 0);
 var FENCE = /^```proschi[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm;
 function register(on, options) {
   const chosen = options.icons;
   icons = chosen === "symbols" || chosen === "none" ? chosen : "nerd-font";
   on("session.start", async ($, e, next) => {
-    await $.command.register({ name: "proschi", description: "Proschi diagrams: /proschi view <file.proschi> shows one in a pane", argumentHint: "view [--expand <id>,\u2026] [--focus <id>] <file>" });
+    await $.command.register({ name: "proschi", description: "Proschi diagrams: /proschi view <file.proschi> shows one in a pane, or with --inline in the transcript", argumentHint: "view [--inline] [--expand <id>,\u2026] [--focus <id>] <file>" });
+    return next(e);
+  });
+  on("prompt.submit", async ($, e, next) => {
+    await update($, prompts, (n) => n + 1);
     return next(e);
   });
   on("prompt.compose", async ($, e, next) => {
@@ -6932,8 +6941,10 @@ function register(on, options) {
     const [verb, ...rest] = e.args.trim().split(/\s+/);
     const words = [];
     const view = {};
+    let inline2 = false;
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === "--expand" || rest[i] === "--focus") {
+      if (rest[i] === "--inline") inline2 = true;
+      else if (rest[i] === "--expand" || rest[i] === "--focus") {
         const value = rest[++i];
         if (!value || idList(value).length === 0) return { text: `Missing system id after ${rest[i - 1]}` };
         if (rest[i - 1] === "--expand") view.expanded = [...view.expanded ?? [], ...idList(value)];
@@ -6947,6 +6958,10 @@ function register(on, options) {
       const { diagram, errors } = parseSource(await readWithImports($, file));
       const refused = errors.length ? void 0 : viewError(diagram, view);
       if (refused) return { text: refused };
+    }
+    if (inline2) {
+      await placeInline($, { file }, { ...IDLE, expanded: view.expanded ?? [], ...view.focus !== void 0 ? { focus: view.focus } : {} });
+      return { text: `Showing ${file} in the transcript.` };
     }
     stop(PANE_VIEW);
     await update($, memberOf(players, { requestId: PANE_VIEW }), () => ({ ...IDLE, expanded: view.expanded ?? [], ...view.focus !== void 0 ? { focus: view.focus } : {} }));
@@ -6991,6 +7006,17 @@ function register(on, options) {
     const view = await diagramView($, { ui, requestId: e.requestId, columns: (e.viewport?.columns ?? 120) - 6 }, `${e.requestId}:0`, source, file);
     return /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, row, /* @__PURE__ */ h(ui.Box, { paddingLeft: 2 }, "error" in view ? /* @__PURE__ */ h(ui.Text, { dimColor: true }, view.error) : view.element));
   });
+  on("ui.render", { component: "Placed" }, async ($, e, next) => {
+    if (e.props.plugin !== "proschi" || !e.props.id.startsWith(INLINE)) return next(e);
+    const ui = $.ui.resolve(e);
+    if (e.surface !== "terminal") return /* @__PURE__ */ h(ui.Text, null, "The Proschi drawing draws in a terminal.");
+    const row = await read($, memberOf(placedRows, { requestId: e.props.id }));
+    if (!row.file && !row.source) return /* @__PURE__ */ h(ui.Text, { dimColor: true }, "Drawing\u2026");
+    const source = row.file ? await readWithImports($, row.file).catch(() => void 0) : { source: row.source, ...row.path ? { path: row.path } : {}, ...row.imports ? { imports: row.imports } : {} };
+    if (!source) return /* @__PURE__ */ h(ui.Text, { color: "red" }, "Cannot read ", row.file, ".");
+    const view = await diagramView($, { ui, requestId: e.requestId, columns: (e.viewport?.columns ?? 120) - 4 }, `${e.props.id}:0`, source, row.file);
+    return "error" in view ? /* @__PURE__ */ h(ui.Text, { color: "red" }, view.error) : view.element;
+  });
   on("ui.render", { component: "Pane", requestId: PANE }, async ($, e) => {
     if (e.surface !== "terminal") {
       const { Text } = $.ui.resolve(e);
@@ -7014,7 +7040,7 @@ function proschiFile(tool, input) {
   const path = input?.file_path;
   return typeof path === "string" && path.endsWith(".proschi") ? path : void 0;
 }
-var USAGE = "Usage: /proschi view [--expand <system>[,<system>\u2026]] [--focus <system>] <file.proschi>";
+var USAGE = "Usage: /proschi view [--inline] [--expand <system>[,<system>\u2026]] [--focus <system>] <file.proschi>";
 var basename = (path) => path.split("/").pop() ?? path;
 var dirname = (path) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 async function projectRoot($, dir) {
@@ -7125,6 +7151,7 @@ async function diagramView($, d, viewId, written, file) {
     doc = loadDocument(source);
     documents.set(key, doc);
   }
+  if (d.requestId !== PANE && !drawings.has(viewId)) drawings.set(viewId, { requestId: d.requestId, key: drawnKey(file ? { file } : { source: written.source }) });
   const where = file ?? "The diagram";
   if (doc.errors.length > 0) {
     const [first] = doc.errors;
@@ -7160,7 +7187,7 @@ async function diagramView($, d, viewId, written, file) {
   const lost = lostImports(written, keyOf(written));
   const hasSystems = systems.length > 0 || player.focus !== void 0;
   const roomy = view.width >= 79;
-  return { element: /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, playing ? playerHeader($, view, playing, player) : doc.diagram.title && /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, /* @__PURE__ */ h(ui.Text, { bold: true }, doc.diagram.title), doc.diagram.summary && /* @__PURE__ */ h(ui.Text, { dimColor: true }, doc.diagram.summary)), /* @__PURE__ */ h(ui.Box, { key: view.anchorKey, flexDirection: "column" }, grid.columns > d.columns && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u2194 ", grid.columns, " columns wide, wider than the ", d.columns, " here: ", view.inPane ? "widen the window" : "use \u26F6 Focus or a wider window", " to see it whole."), lost.some((name) => !importReasons.has(name)) && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u26A0 Not found, so drawn as plain boxes: ", lost.filter((name) => !importReasons.has(name)).join(", ")), lost.filter((name) => importReasons.has(name)).map((name) => /* @__PURE__ */ h(ui.Text, { key: `lost-${name}`, dimColor: true }, "\u26A0 ", importReasons.get(name))), doc.notes.map((note) => /* @__PURE__ */ h(ui.Text, { color: "yellow" }, "\u26A0 ", note.text, note.hint && /* @__PURE__ */ h(ui.Text, { dimColor: true }, " \u2192 ", note.hint))), /* @__PURE__ */ h(ui.Raster, { key: rasterKey, columns: grid.columns, rows: grid.rows, cells: grid.toBase64() })), hasSystems && !playing && systemBar($, view, doc, systems, selected, player), playing ? stepPanel($, view, playing, step, player) : pick && useCaseBar($, view, doc, pick, player), /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, borderStyle: "round", borderColor: "gray", paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Button, { key: `src-${viewId}`, label: roomy ? "\u29C9 Copy source" : "\u29C9 Source", onPress: (press) => void copy($, press.surface, source.source, "the Proschi source") }), /* @__PURE__ */ h(ui.Button, { key: `lnk-${viewId}`, label: roomy ? "\u29C9 Copy share link" : "\u29C9 Link", onPress: (press) => void copy($, press.surface, link, "the share link") }), /* @__PURE__ */ h(ui.Button, { key: `open-${viewId}`, label: roomy ? "\u2197 Open in Proschi" : "\u2197 Open", variant: "primary", onPress: (press) => void openLink($, press.surface, link) }), !view.inPane && /* @__PURE__ */ h(ui.Button, { key: `focus-${viewId}`, label: "\u26F6 Focus", onPress: () => focus($, view, file ? basename(file) : doc.diagram.title ?? "diagram", file ? { file } : { source }) }))), systems: hasSystems };
+  return { element: /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, playing ? playerHeader($, view, playing, player) : doc.diagram.title && /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, /* @__PURE__ */ h(ui.Text, { bold: true }, doc.diagram.title), doc.diagram.summary && /* @__PURE__ */ h(ui.Text, { dimColor: true }, doc.diagram.summary)), /* @__PURE__ */ h(ui.Box, { key: view.anchorKey, flexDirection: "column" }, grid.columns > d.columns && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u2194 ", grid.columns, " columns wide, wider than the ", d.columns, " here: ", view.inPane ? "widen the window" : "use \u26F6 Focus or a wider window", " to see it whole."), lost.some((name) => !importReasons.has(name)) && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u26A0 Not found, so drawn as plain boxes: ", lost.filter((name) => !importReasons.has(name)).join(", ")), lost.filter((name) => importReasons.has(name)).map((name) => /* @__PURE__ */ h(ui.Text, { key: `lost-${name}`, dimColor: true }, "\u26A0 ", importReasons.get(name))), doc.notes.map((note) => /* @__PURE__ */ h(ui.Text, { color: "yellow" }, "\u26A0 ", note.text, note.hint && /* @__PURE__ */ h(ui.Text, { dimColor: true }, " \u2192 ", note.hint))), /* @__PURE__ */ h(ui.Raster, { key: rasterKey, columns: grid.columns, rows: grid.rows, cells: grid.toBase64() })), hasSystems && !playing && systemBar($, view, doc, systems, selected, player), playing ? stepPanel($, view, playing, step, player) : pick && useCaseBar($, view, doc, pick, player), /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, borderStyle: "round", borderColor: "gray", paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Button, { key: `src-${viewId}`, label: roomy ? "\u29C9 Copy source" : "\u29C9 Source", onPress: (press) => void copy($, press.surface, source.source, "the Proschi source") }), /* @__PURE__ */ h(ui.Button, { key: `lnk-${viewId}`, label: roomy ? "\u29C9 Copy share link" : "\u29C9 Link", onPress: (press) => void copy($, press.surface, link, "the share link") }), /* @__PURE__ */ h(ui.Button, { key: `open-${viewId}`, label: roomy ? "\u2197 Open in Proschi" : "\u2197 Open", variant: "primary", onPress: (press) => void openLink($, press.surface, link) }), view.inPane && /* @__PURE__ */ h(ui.Button, { key: `inline-${viewId}`, label: roomy ? "\u2193 Inline" : "\u2193", ...hotkey(view, "i"), onPress: () => void toInline($) }), !view.inPane && /* @__PURE__ */ h(ui.Button, { key: `focus-${viewId}`, label: "\u26F6 Focus", onPress: () => focus($, view, file ? basename(file) : doc.diagram.title ?? "diagram", file ? { file } : { source }) }))), systems: hasSystems };
 }
 function playedPick(doc, player) {
   if (player.mode !== "play") return void 0;
@@ -7388,6 +7415,55 @@ async function scroll($, args) {
   const moved = await $.ui.scroll(args).catch((error) => ({ deny: String(error) }));
   if (moved.deny) $.ui.log(`proschi: scroll to ${JSON.stringify(args.to)} refused: ${moved.deny}`, { to: "debug" });
   return moved;
+}
+var placedCount = 0;
+async function placeInline($, what, player) {
+  const id = `${INLINE}${Date.now().toString(36)}-${++placedCount}`;
+  const placing = $.ui.place({ id });
+  const stands = await player;
+  await update($, memberOf(players, { requestId: `${id}:0` }), () => ({ ...stands, isPlaying: false }));
+  const drawn = { ...await what, prompt: await read($, prompts) };
+  await update($, memberOf(placedRows, { requestId: id }), () => drawn);
+  const placed = await placing;
+  if (!placed.isPlaced) $.ui.toast(`The Proschi drawing is in the transcript but not shown: ${placed.reason}`);
+  else await scroll($, { to: { requestId: placed.requestId }, block: "start" });
+}
+var drawnKey = (what) => what.file ? `file:${what.file}` : `source:${(what.source ?? "").trim()}`;
+async function inLastResponse($, key) {
+  const messages = await $.session.messages().catch(() => []);
+  const prompt = messages.findLastIndex((m) => m.role === "user" && !m.toolResults?.length);
+  const replied = messages.slice(prompt + 1).some(
+    (m) => m.role === "assistant" && (m.toolUses.some((t) => {
+      const file = proschiFile(t.tool, t.input);
+      return file !== void 0 && drawnKey({ file }) === key;
+    }) || [...m.text.matchAll(FENCE)].some((f) => drawnKey({ source: f[1] }) === key))
+  );
+  const now = await read($, prompts);
+  for (const [viewId, d] of [...drawings].reverse()) {
+    if (d.key !== key) continue;
+    const placed = viewId.startsWith(INLINE) ? await read($, memberOf(placedRows, { requestId: viewId.slice(0, -":0".length) })) : void 0;
+    if (placed ? placed.prompt === now : replied) return { viewId, requestId: d.requestId };
+  }
+  return void 0;
+}
+function toInline($) {
+  stop(PANE_VIEW);
+  stop(PANE);
+  const what = (async () => {
+    const file = await read($, paneFile);
+    if (file) return { file };
+    const { source, path, imports } = await read($, paneSource);
+    return { source, ...path ? { path } : {}, ...imports ? { imports } : {} };
+  })();
+  const player = read($, memberOf(players, { requestId: PANE_VIEW })).then(normal);
+  return (async () => {
+    const standing = await inLastResponse($, drawnKey(await what));
+    if (!standing) return placeInline($, what, player);
+    stop(standing.viewId);
+    const stands = await player;
+    await update($, memberOf(players, { requestId: standing.viewId }), () => ({ ...stands, isPlaying: false }));
+    await scroll($, { to: { requestId: standing.requestId }, block: "start" });
+  })().then(() => $.ui.close({ id: PANE }));
 }
 function focus($, view, title, what) {
   const opened = $.ui.open({ id: PANE, title: `Proschi \xB7 ${title}`, focus: true, closeOnEscape: true });

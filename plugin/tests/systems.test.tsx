@@ -16,7 +16,7 @@ const FILE = `${ROOT}/org-busy.proschi`
 type On = Parameters<Parameters<typeof test>[1]>[1]
 
 /** The project on disk and Node laying it out, as the engine would answer them; what each layout was asked for is kept in `asked`. */
-function project(on: On, asked: unknown[]) {
+function project(on: On, asked: unknown[], opens: string[] = []) {
   mock.clock(on)
   const path = (p: string) => (p.startsWith(`${ROOT}/`) ? p.slice(ROOT.length + 1) : '')
   on('fs.exists', (_, e) => ({ value: e.path === `${ROOT}/proschi.json` || path(e.path) in DRONE }))
@@ -29,7 +29,10 @@ function project(on: On, asked: unknown[]) {
     return { value: { exitCode: 0, stdout: layout, stderr: '' } }
   })
   on('ui.invalidate', () => ({ value: undefined }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', (_, e) => {
+    opens.push(e.id)
+    return { value: { isPlaced: true } }
+  })
   on('ui.blit', () => ({ value: {} }))
   on('ui.scroll', () => ({ value: {} }))
   on('command.register', () => ({ value: { command: 'proschi' } }))
@@ -103,5 +106,26 @@ test('/proschi view takes --expand and --focus, and names the systems for an id 
   const ui = await drawn($)
   expect(asked).toContainEqual({ focus: 'orders' })
   expect(await ui.find({ type: 'Text', text: /^Inside orders · Orders$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/proschi view --inline draws the file in a row at the transcript\'s end, not in the pane', async ($, on) => {
+  const asked: unknown[] = []
+  const places: string[] = []
+  const opens: string[] = []
+  project(on, asked, opens)
+  on('ui.place', (_, e) => {
+    places.push(e.id)
+    return { value: { isPlaced: true, requestId: `row-${e.id}` } }
+  })
+  expect((await $.command.run({ command: 'proschi', args: `view --inline ${FILE}` })).text).toBe(`Showing ${FILE} in the transcript.`)
+  expect(opens).toEqual([])
+  expect(places).toHaveLength(1)
+  const id = places[0]!
+  const row = { plugin: 'proschi', component: 'Placed', requestId: `row-${id}`, surface: 'terminal', props: { id, plugin: 'proschi' } } as const
+  await (await $.ui.mount(row)).unmount()
+  const ui = await $.ui.mount(row)
+  expect(await ui.find({ type: 'Raster', key: `d-${id}:0` })).toBeDefined()
+  expect(await ui.find({ key: `focus-${id}:0` })).toBeDefined()
   await ui.unmount()
 })
