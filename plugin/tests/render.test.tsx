@@ -153,6 +153,44 @@ for (const [icons, postgres] of [['nerd-font', '\ue76e'], ['symbols', '◉']] as
   })
 }
 
+test('a playing scenario draws as its sequence diagram, and the toggle plays it over the architecture instead', async ($, on) => {
+  const clock = mock.clock(on)
+  const blits: { key: string; cells: string }[] = []
+  on('process.run', () => ({ value: { exitCode: 0, stdout: LAYOUT, stderr: '' } }))
+  on('ui.invalidate', () => ({ value: undefined }))
+  on('ui.blit', (_, e) => {
+    blits.push({ key: String((e as { key?: unknown }).key), cells: 'cells' in e ? e.cells : '' })
+    return { value: {} }
+  })
+  await (await $.ui.mount(reply(FENCED))).unmount()
+  const ui = await $.ui.mount(reply(FENCED))
+  expect(await ui.find({ type: 'Raster', key: 'd-m1:0' })).toBeDefined()
+
+  await ui.press({ key: 'play-m1:0' })
+  const sequence = glyphs(await ui.find({ type: 'Raster', key: 'q-m1:0' }))
+  // A box per participant, the numbered requests and the responses under them.
+  for (const text of ['Web App', 'Checkout API', 'Cart Cache', '1 POST /orders', '2 GET cart', 'items', '201']) expect(sequence).toContain(text)
+  expect(await ui.find({ type: 'Raster', key: 'd-m1:0' })).toBeUndefined()
+  // The packet travels the sequence diagram's arrows, in its own Raster.
+  await clock.advance(1000)
+  expect(blits.length).toBeGreaterThan(2)
+  expect(new Set(blits.map(b => b.key))).toEqual(new Set(['q-m1:0']))
+  expect(new Set(blits.map(b => b.cells)).size).toBeGreaterThan(2)
+
+  const label = async () => ((await ui.find({ key: 'view-m1:0' })) as unknown as { props: { label: string } }).props.label
+  const toArchitecture = await label()
+  expect(toArchitecture).toMatch(/Architecture/)
+  await ui.press({ key: 'view-m1:0' })
+  expect(await ui.find({ type: 'Raster', key: 'd-m1:0' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Step \d+ of \d+$/ })).toBeDefined()
+  const toSequence = await label()
+  expect(toSequence).toMatch(/Sequence/)
+  expect([...toSequence].length).toBe([...toArchitecture].length)
+  await ui.press({ key: 'view-m1:0' })
+  expect(await ui.find({ type: 'Raster', key: 'q-m1:0' })).toBeDefined()
+  await ui.unmount()
+})
+
 test('Play and Pause are as wide as each other', async ($, on) => {
   on('process.run', () => ({ value: { exitCode: 0, stdout: LAYOUT, stderr: '' } }))
   on('ui.invalidate', () => ({ value: undefined }))
@@ -222,12 +260,12 @@ test('Focus opens the block in a focused pane that Esc closes, with its player a
   expect(opens[0]).toMatchObject({ id: 'proschi-view', focus: true, closeOnEscape: true })
   expect(opens[0]!.holdToasts).toBeUndefined()
 
-  // The pane draws the block (it has no file) where the inline player stood.
+  // The pane draws the block (it has no file) where the inline player stood: its sequence diagram, as the scenario plays.
   const p = await $.ui.mount(pane(true))
-  expect(await p.find({ type: 'Raster', key: 'd-proschi-view:0' })).toBeDefined()
+  expect(await p.find({ type: 'Raster', key: 'q-proschi-view:0' })).toBeDefined()
   expect(await p.find({ type: 'Text', text: /^Step 2 of \d+$/ })).toBeDefined()
   expect(await p.find({ key: 'focus-proschi-view:0' })).toBeUndefined()
-  for (const [key, hotkey] of [['play', 'p'], ['next', 'n'], ['prev', 'b'], ['reset', 'r'], ['end', 'e'], ['back', 'd']] as const) {
+  for (const [key, hotkey] of [['play', 'p'], ['next', 'n'], ['prev', 'b'], ['reset', 'r'], ['end', 'e'], ['back', 'd'], ['view', 'v']] as const) {
     expect(await hotkeyOf(p, `${key}-proschi-view:0`)).toBe(hotkey)
   }
   expect(await hotkeyOf(p, 'exit-proschi-view:0')).toBeUndefined()

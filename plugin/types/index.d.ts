@@ -4,7 +4,8 @@
  * whether the use case explorer is open. And which systems it draws open
  * (`expanded`), which one it is focused into (`focus`), and which one the
  * system keys act on (`selected`), each by its path from the root document
- * (`orders`, `orders.warehouse`).
+ * (`orders`, `orders.warehouse`). And whether a scenario plays over the
+ * architecture instead of as its sequence diagram (`view`).
  */
 export type Player = {
   pick: string
@@ -15,6 +16,8 @@ export type Player = {
   expanded: string[]
   focus?: string
   selected?: string
+  /** What a playing scenario is drawn as: its sequence diagram (the default), or played over the architecture. */
+  view?: 'architecture'
 }
 
 /** A document the pane draws when it shows no file: a fenced block focused from a reply, with its imports. */

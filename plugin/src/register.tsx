@@ -9,6 +9,8 @@ import { isRemoteSpec } from '../../frontend/src/dsl/imports'
 import { paint } from '../../tooling/src/terminal/paint'
 import { currentStepsOf, isErrorStep, playAt, STEP_MS, TRAVEL_MS } from '../../tooling/src/terminal/playback'
 import { buildScene, type Scene } from '../../tooling/src/terminal/scene'
+import { buildSequenceScene, paintSequence, type SequenceScene } from '../../tooling/src/terminal/sequence'
+import type { Grid } from '../../tooling/src/terminal/grid'
 import { idList, systemAt, viewError, type SystemsView } from '../../tooling/src/terminal/systems'
 import type { DiagramScenario, DiagramUseCase, FlowStep } from '../../frontend/src/dsl/types'
 import { groupByEndpoint } from '../../frontend/src/playground/useCaseGroups'
@@ -40,7 +42,7 @@ const paneSource = atom({ plugin: 'proschi', key: 'paneSource' } as const, NO_SO
 const players = atom({ plugin: 'proschi', key: 'player' } as const, IDLE)
 
 /** The pane's keys, as its Buttons' hotkeys name them; the system keys where the diagram has systems. */
-const PANE_KEYS = 'p play · n/b step · r restart · e end · x explorer · d diagram · esc back to the prompt'
+const PANE_KEYS = 'p play · n/b step · r restart · e end · v sequence/architecture · x explorer · d diagram · esc back to the prompt'
 const SYSTEM_KEYS = 's next system · o open/close · f focus in · u back out'
 
 /** One animation frame, in ms. */
@@ -58,6 +60,7 @@ const layouts = new Map<string, Layout | { error: string }>()
 const pending = new Set<string>()
 const documents = new Map<string, Document>()
 const scenes = new Map<string, Scene>()
+const sequences = new Map<string, SequenceScene>()
 const timers = new Map<string, { cancel(): void }>()
 
 const FENCE = /^```proschi[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm
@@ -311,6 +314,10 @@ interface View {
   overlay: Document['overlay']
   /** Drawn in the pane, whose Buttons take hotkeys and whose body scrolls under the plugin. */
   inPane: boolean
+  /** The document and the key it is cached under, and the columns it is drawn in: what a played scenario's sequence diagram is built from. */
+  doc: Document
+  docKey: string
+  columns: number
 }
 
 /** A stored player in the current shape: an older version stored `beat` instead of `step` and `mode`. */
@@ -324,6 +331,7 @@ function normal(p: Partial<Player> | undefined): Player {
     expanded: Array.isArray(p?.expanded) ? p.expanded.filter((id): id is string => typeof id === 'string') : [],
     ...(typeof p?.focus === 'string' ? { focus: p.focus } : {}),
     ...(typeof p?.selected === 'string' ? { selected: p.selected } : {}),
+    ...(p?.view === 'architecture' ? { view: 'architecture' as const } : {}),
   }
 }
 
@@ -382,12 +390,12 @@ async function diagramView($: EngineInterface, d: Draw, viewId: string, written:
   const width = Math.min(Math.max(40, d.columns), Math.max(scene.columns, BARS_WIDTH))
   const systems = selectable(scene, player.focus)
   const selected = systems.find(s => s.path === player.selected) ?? systems[0]
-  const view: View = { d, viewId, rasterKey: `d-${viewId}`, anchorKey: `at-${viewId}`, scene, width, overlay: doc.overlay, systems: doc.systems, ...(selected ? { selected: selected.id } : {}), inPane: d.requestId === PANE }
+  const view: View = { d, viewId, rasterKey: `d-${viewId}`, anchorKey: `at-${viewId}`, scene, width, overlay: doc.overlay, systems: doc.systems, ...(selected ? { selected: selected.id } : {}), inPane: d.requestId === PANE, doc, docKey: key, columns }
   if (playing && player.isPlaying && !timers.has(viewId)) animate($, view, steps)
 
   // While a step animates, its frames are blitted in place; a drawing starts it from the beginning.
   const progress = timers.has(viewId) ? 0 : 100
-  const grid = paint(scene, { overlay: doc.overlay, icons, systems: doc.systems, ...(view.selected ? { selected: view.selected } : {}), ...(steps.length > 0 ? { play: playAt(scene, steps, step, progress) } : {}) })
+  const { grid, rasterKey } = frameOf(view, player, step, progress)
   const link = doc.link(playing ? { useCase: playing.useCase.id, ...(playing.useCase.scenarios.length > 1 ? { scenario: playing.scenario.id } : {}), step } : undefined)
   const lost = lostImports(written, keyOf(written))
   const hasSystems = systems.length > 0 || player.focus !== undefined
@@ -426,7 +434,7 @@ async function diagramView($: EngineInterface, d: Draw, viewId: string, written:
             {note.hint && <ui.Text dimColor> → {note.hint}</ui.Text>}
           </ui.Text>
         ))}
-        <ui.Raster key={view.rasterKey} columns={grid.columns} rows={grid.rows} cells={grid.toBase64()} />
+        <ui.Raster key={rasterKey} columns={grid.columns} rows={grid.rows} cells={grid.toBase64()} />
       </ui.Box>
       {hasSystems && !playing && systemBar($, view, doc, systems, selected, player)}
       {playing ? stepPanel($, view, playing, step, player) : pick && useCaseBar($, view, doc, pick, player)}
@@ -438,6 +446,36 @@ async function diagramView($: EngineInterface, d: Draw, viewId: string, written:
       </ui.Box>
     </ui.Box>
   ), systems: hasSystems }
+}
+
+/** The scenario a player plays, if it plays one. */
+function playedPick(doc: Document, player: Player): Pick | undefined {
+  if (player.mode !== 'play') return undefined
+  const picks = doc.diagram.useCases.flatMap(u => u.scenarios.map(s => pickOf(u, s)))
+  return picks.find(p => p.value === player.pick) ?? picks[0]
+}
+
+/**
+ * One frame of a drawing and the Raster it goes in: the diagram, with the
+ * scenario played over it; or, while a scenario plays in the sequence view
+ * (the default), its sequence diagram with the step lit, in a Raster of its
+ * own so a blit never lands in one of the other size.
+ */
+function frameOf(view: View, player: Player, step: number, progress: number, tick = 0): { grid: Grid; rasterKey: string } {
+  const pick = playedPick(view.doc, player)
+  const steps = pick?.scenario.steps ?? []
+  const at = Math.max(0, Math.min(step, steps.length - 1))
+  if (pick && player.view !== 'architecture') {
+    const key = `${view.docKey}#${pick.value}@${view.columns}`
+    let sequence = sequences.get(key)
+    if (!sequence) {
+      sequence = buildSequenceScene(view.doc.diagram, pick.useCase, pick.scenario, view.columns)
+      sequences.set(key, sequence)
+    }
+    return { grid: paintSequence(sequence, { icons, ...(steps.length > 0 ? { play: { index: at, progress } } : {}) }), rasterKey: `q-${view.viewId}` }
+  }
+  const grid = paint(view.scene, { overlay: view.overlay, icons, systems: view.systems, ...(view.selected ? { selected: view.selected } : {}), ...(steps.length > 0 ? { play: playAt(view.scene, steps, at, progress, tick) } : {}) })
+  return { grid, rasterKey: view.rasterKey }
 }
 
 /** A system the keys can act on: a collapsed box or an expanded frame, by its id in the scene and its path from the root document. */
@@ -528,6 +566,8 @@ function lostImports(source: Source, key: string): string[] {
 
 /** The explorer toggle's labels, long and short, each pair as wide as each other so a toggle leaves no cell behind; no glyph whose width terminals disagree on (☰ is wide in Unicode 16, narrow before). */
 const EXPLORE = { long: ['≡ Explore use cases', '≡ Hide explorer'], short: ['≡ Explore', '≡ Hide'] }
+/** The player's view toggle, naming the view it switches to: the architecture from the sequence diagram, and back. */
+const VIEWS = ['◫ Architecture', '⇅ Sequence']
 const toggle = (labels: string[], open: boolean) => labels[open ? 1 : 0].padEnd(Math.max(...labels.map(l => l.length)))
 
 /** `text` cut to `room` cells with an ellipsis. */
@@ -630,6 +670,15 @@ function playerHeader($: EngineInterface, view: View, pick: Pick, player: Player
         <ui.Text dimColor wrap="truncate-end">
           · Playback mode · read only
         </ui.Text>
+        <ui.Button
+          key={`view-${view.viewId}`}
+          label={toggle(VIEWS, player.view === 'architecture')}
+          {...hotkey(view, 'v')}
+          onPress={() => {
+            reveal($, view)
+            void setPlayer($, view, p => ({ ...p, view: p.view === 'architecture' ? undefined : 'architecture' }), player.isPlaying ? pick.scenario.steps : undefined)
+          }}
+        />
       </ui.Box>
       {useCase.scenarios.length > 1 && (
         <ui.Box flexDirection="row" gap={1} flexWrap="wrap">
@@ -885,8 +934,8 @@ function animate($: EngineInterface, view: View, steps: FlowStep[]): void {
     const now = await $.clock.now()
     if (started < 0) started = now
     const elapsed = now - started
-    const play = playAt(view.scene, steps, step, Math.min(100, (elapsed / TRAVEL_MS) * 100), tick++)
-    await $.ui.blit({ requestId: view.d.requestId, key: view.rasterKey, cells: paint(view.scene, { overlay: view.overlay, icons, systems: view.systems, ...(view.selected ? { selected: view.selected } : {}), play }).toBase64() })
+    const { grid, rasterKey } = frameOf(view, player, step, Math.min(100, (elapsed / TRAVEL_MS) * 100), tick++)
+    await $.ui.blit({ requestId: view.d.requestId, key: rasterKey, cells: grid.toBase64() })
     if (!player.isPlaying) {
       if (elapsed >= TRAVEL_MS) stop(view.viewId)
       return

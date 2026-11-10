@@ -8,6 +8,7 @@ import { DEFAULT, Grid, base64 } from '../src/terminal/grid';
 import { COLOR, heatOf, paint } from '../src/terminal/paint';
 import { currentStepsOf, playAt, stepPath } from '../src/terminal/playback';
 import { buildScene, routePath, type Rect, type Scene } from '../src/terminal/scene';
+import { buildSequenceScene, paintSequence } from '../src/terminal/sequence';
 
 async function sceneOf(source: string, columns = 150) {
   const doc = loadDocument({ source });
@@ -407,5 +408,98 @@ describe('terminal systems', () => {
     expect(viewError(diagram, { focus: 'shopper' })).toMatch(/^No system 'shopper' to focus/);
     expect(viewOptions({ expanded: ['orders.wh'] }).expanded).toEqual(new Set(['orders', 'orders.wh']));
     expect(keyOf(drone('org.proschi', { expanded: ['orders'] }))).not.toBe(keyOf(drone('org.proschi')));
+  });
+});
+
+describe('terminal sequence', () => {
+  const SECTIONS = [
+    'user "Shopper" [Actor]',
+    'api "Orders API" [REST API]',
+    'pay "Stripe" [External API]',
+    'db "Orders DB" [PostgreSQL]',
+    'queue "Events" [Kafka]',
+    'user -> api : HTTPS',
+    'api -> pay : HTTPS',
+    'api -> db : SQL',
+    'api -> queue : publish',
+    'usecase "Place order" {',
+    '  section "VALIDATE" {',
+    '    user -> api : POST /orders',
+    '    api -> api : Check stock',
+    '  }',
+    '  section "PAY" {',
+    '    par {',
+    '      api -> pay : Charge',
+    '      pay --> api : 200',
+    '      api -> db : Reserve',
+    '      db --> api : ok',
+    '    }',
+    '  }',
+    '  api ->> queue : OrderPlaced',
+    '  api --> user : 201 Created',
+    '}',
+  ].join('\n');
+
+  const sceneOfUseCase = (source: string, columns = 120) => {
+    const doc = loadDocument({ source });
+    const useCase = doc.diagram.useCases[0];
+    return buildSequenceScene(doc.diagram, useCase, useCase.scenarios[0], columns);
+  };
+
+  it('draws participants, numbered requests, responses and a frame per section and par', () => {
+    const scene = sceneOfUseCase(SECTIONS);
+    const text = paintSequence(scene, { icons: 'none' }).toText();
+    for (const name of ['Shopper', 'Orders API', 'Stripe', 'Orders DB', 'Events']) expect(text).toContain(name);
+    for (const label of ['1 POST /orders', '2 Check stock', '3 Charge', '4 Reserve', '5 OrderPlaced', '201 Created']) expect(text).toContain(label);
+    expect(text).toMatch(/╭─ VALIDATE ─+╮/);
+    expect(text).toMatch(/╭─ PAY ─+╮/);
+    expect(text).toMatch(/╭─ par ─+╮/);
+    // The par's branches split by a divider, and the async message drawn with an open head.
+    expect(text).toMatch(/├╌+┤/);
+    expect(text).toContain('▷');
+    // The response comes after the sections it is not written in.
+    const rows = text.split('\n');
+    expect(rows.findIndex((r) => r.includes('201 Created'))).toBeGreaterThan(rows.findIndex((r) => r.includes('5 OrderPlaced')));
+    expect(text).toMatchSnapshot();
+  });
+
+  it('lights the current step and sends its packet along the arrow, and only that', () => {
+    const scene = sceneOfUseCase(SECTIONS);
+    const idle = paintSequence(scene, { icons: 'none' });
+    const start = paintSequence(scene, { icons: 'none', play: { index: 0, progress: 10 } });
+    const back = paintSequence(scene, { icons: 'none', play: { index: 0, progress: 80 } });
+    const done = paintSequence(scene, { icons: 'none', play: { index: 0, progress: 100 } });
+    expect(idle.toText()).not.toContain('■');
+    expect(start.toText()).toContain('■');
+    expect(back.toText()).toContain('■');
+    expect(done.toText()).not.toContain('■');
+    // Out on the request's row, back on the response's.
+    const rowOf = (text: string) => text.split('\n').findIndex((r) => r.includes('■'));
+    expect(rowOf(back.toText())).toBeGreaterThan(rowOf(start.toText()));
+    expect(done.toText()).toMatch(/━+►/);
+    expect(idle.toText()).not.toMatch(/━+►/);
+    expect(done.toText()).toContain('┅');
+    // A par plays as one step: both branches lit at once.
+    const par = paintSequence(scene, { icons: 'none', play: { index: 3, progress: 100 } }).toText();
+    expect(par.split('\n').filter((r) => /━+[►◄]/.test(r)).length).toBe(2);
+  });
+
+  it('cuts labels to fit the columns it is given', () => {
+    const long = SECTIONS.replace('POST /orders', `POST /orders/${'x'.repeat(80)}`);
+    const scene = sceneOfUseCase(long, 90);
+    expect(scene.columns).toBeLessThanOrEqual(90);
+    expect(paintSequence(scene).toText()).toContain('…');
+  });
+
+  it('draws every example use case without throwing', () => {
+    for (const { source } of examples) {
+      const doc = loadDocument({ source });
+      for (const useCase of doc.diagram.useCases) {
+        for (const scenario of useCase.scenarios) {
+          const scene = buildSequenceScene(doc.diagram, useCase, scenario, 160);
+          for (let i = 0; i < scenario.steps.length; i++) paintSequence(scene, { play: { index: i, progress: 50 } });
+        }
+      }
+    }
   });
 });

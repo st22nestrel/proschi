@@ -1270,6 +1270,29 @@ function buildSequence(useCase, scenario, nodes = []) {
 function sequenceMessages(items) {
   return items.flatMap((item) => item.kind === "message" ? [item.message] : item.branches.flat());
 }
+function sameSection(a, b) {
+  return a.name === b.name && a.loc.line === b.loc.line && a.loc.col === b.loc.col && a.loc.file === b.loc.file;
+}
+function itemSections(item) {
+  return item.kind === "message" ? item.message.sections : item.branches[0]?.[0]?.sections ?? [];
+}
+function sectionedItems(items) {
+  const out = [];
+  const open = [];
+  for (const item of items) {
+    const path = itemSections(item);
+    let common = 0;
+    while (common < open.length && common < path.length && sameSection(open[common], path[common])) common++;
+    while (open.length > common) out.push({ kind: "close", section: open.pop(), depth: open.length });
+    for (const section of path.slice(common)) {
+      out.push({ kind: "open", section, depth: open.length });
+      open.push(section);
+    }
+    out.push({ kind: "item", item, depth: open.length });
+  }
+  while (open.length) out.push({ kind: "close", section: open.pop(), depth: open.length });
+  return out;
+}
 
 // ../frontend/src/dsl/palette.ts
 var PALETTE = {
@@ -4667,7 +4690,7 @@ function analyze(diagram, options = {}) {
   }
   for (const s of systems?.systems ?? []) warnings.push(...s.warnings);
   const access = accessIn(diagram);
-  const pathOf = (hopsOfPath) => ({
+  const pathOf2 = (hopsOfPath) => ({
     parts: hopsOfPath.map(
       (part) => part.map((h2) => {
         if (h2.failed) return { fixedMs: timeoutOf(h2.target), tailMs: 0 };
@@ -4678,7 +4701,7 @@ function analyze(diagram, options = {}) {
   });
   const useCases = diagram.useCases.map((u) => {
     const { rps, shares } = traffic.get(u.id);
-    const paths = u.scenarios.map((s) => pathOf(criticalPath(u, s)));
+    const paths = u.scenarios.map((s) => pathOf2(criticalPath(u, s)));
     const scenarios = u.scenarios.map((s, i) => ({
       id: s.id,
       name: s.name,
@@ -6271,8 +6294,8 @@ function paint(scene, options = {}) {
   const grid = new Grid(scene.columns, scene.rows);
   const { play } = options;
   const all = [...scene.nodes.values()];
-  const frameOf2 = (n) => isFrame(n.node) ? { badge: options.systems?.[n.node.id], selected: options.selected === n.node.id } : void 0;
-  for (const g of all.filter((n) => n.node.kind === "group").sort((a, b) => a.depth - b.depth)) drawGroup(grid, g, play ? "path" : void 0, frameOf2(g));
+  const frameOf3 = (n) => isFrame(n.node) ? { badge: options.systems?.[n.node.id], selected: options.selected === n.node.id } : void 0;
+  for (const g of all.filter((n) => n.node.kind === "group").sort((a, b) => a.depth - b.depth)) drawGroup(grid, g, play ? "path" : void 0, frameOf3(g));
   for (const n of all) drawStack(grid, scene, n, options.overlay?.[n.node.id], lookOf(play, n.node.id));
   for (const { edge, path } of scene.edges) {
     const own = edge.style?.color ? hex(edge.style.color) : COLOR.line;
@@ -6305,7 +6328,7 @@ function paint(scene, options = {}) {
       if (!onCard(scene, x + i, y)) grid.set(x + i, y, text[i], color);
     }
   }
-  for (const g of all) if (g.node.kind === "group") drawGroupHeading(grid, g, play ? "path" : void 0, frameOf2(g));
+  for (const g of all) if (g.node.kind === "group") drawGroupHeading(grid, g, play ? "path" : void 0, frameOf3(g));
   for (const n of all) drawStackCount(grid, scene, n, options.overlay?.[n.node.id], lookOf(play, n.node.id));
   for (const packet of play?.packets ?? []) grid.set(packet.at.x, packet.at.y, packet.cut ? "\u2717" : "\u25A0", packet.error ? COLOR.fail : COLOR.pink);
   for (const n of all) {
@@ -6646,6 +6669,218 @@ function playAt(scene, steps, index, progress, tick = 0) {
   return { active, failing, pathNodes: pathNodes2, pathEdges, edges, packets, tick };
 }
 
+// src/terminal/sequence.ts
+var HEAD_ROWS = 4;
+var BOX_MIN = 12;
+var BOX_MAX = 26;
+var BOX_FLOOR = 8;
+var LABEL_MIN = 8;
+var FAIL_AT2 = 55;
+var cut = (text, room) => room <= 0 ? "" : text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}\u2026`;
+function labelOf(m) {
+  if (m.kind === "request") return `${m.number} ${m.label}`.trimEnd();
+  return m.label || "return";
+}
+function buildSequenceScene(diagram, useCase, scenario, columns) {
+  const sequence = buildSequence(useCase, scenario, diagram.nodes);
+  const nodes = new Map(diagram.nodes.map((n) => [n.id, n]));
+  const index = new Map(sequence.participants.map((p, i) => [p.id, i]));
+  const items = sectionedItems(sequence.items);
+  const messages = items.flatMap((i) => i.kind !== "item" ? [] : i.item.kind === "message" ? [i.item.message] : i.item.branches.flat());
+  let deepest = 0;
+  for (const i of items) deepest = Math.max(deepest, i.depth + (i.kind === "item" && i.item.kind === "par" ? 1 : 0));
+  const margin = deepest + 1;
+  const natural = sequence.participants.map((p) => {
+    const node = nodes.get(p.id);
+    const named = p.name.length + (node && node.kind === "component" ? 2 : 0);
+    return Math.max(BOX_MIN, Math.min(BOX_MAX, Math.max(named, p.tech?.length ?? 0) + 4));
+  });
+  let widths = natural;
+  const place = (room2) => {
+    const xs = [];
+    sequence.participants.forEach((_, i) => {
+      const half = Math.ceil(widths[i] / 2);
+      xs.push(i === 0 ? Math.max(half, margin + 1) : xs[i - 1] + Math.ceil(widths[i - 1] / 2) + half + 1);
+    });
+    let right = xs.length ? xs[xs.length - 1] + Math.ceil(widths[widths.length - 1] / 2) : 0;
+    const spans = messages.map((m) => {
+      const a = index.get(m.from);
+      const b = index.get(m.to);
+      return { lo: Math.min(a, b), hi: a === b ? a + 1 : Math.max(a, b), need: Math.min(room2, labelOf(m).length) + 3 };
+    }).sort((p, q) => p.hi - q.hi);
+    for (const { lo, hi, need } of spans) {
+      if (hi >= xs.length) {
+        right = Math.max(right, xs[lo] + need + 3);
+        continue;
+      }
+      const short = xs[lo] + need - xs[hi];
+      if (short > 0) for (let i = hi; i < xs.length; i++) xs[i] += short;
+    }
+    right = Math.max(right, xs.length ? xs[xs.length - 1] + Math.ceil(widths[widths.length - 1] / 2) : 0);
+    return { xs, width: right + margin + 1 };
+  };
+  const longest = Math.max(LABEL_MIN, ...messages.map((m) => labelOf(m).length));
+  let room = longest;
+  let placed = place(room);
+  while (placed.width > columns && room > LABEL_MIN) placed = place(--room);
+  for (let box = BOX_MAX - 1; placed.width > columns && box >= BOX_FLOOR; box--) {
+    widths = natural.map((w) => Math.min(w, box));
+    placed = place(room);
+  }
+  while (room < longest && placed.width < columns) {
+    const wider = place(room + 1);
+    if (wider.width > columns) break;
+    placed = wider;
+    room++;
+  }
+  const lifelines = sequence.participants.map((p, i) => ({ ...p, node: nodes.get(p.id), x: placed.xs[i], w: widths[i] }));
+  const width = Math.max(placed.width, 20);
+  const frames = [];
+  const open = [];
+  const rows = [];
+  let y = HEAD_ROWS + 1;
+  const message = (m) => {
+    const a = index.get(m.from);
+    const b = index.get(m.to);
+    rows.push({ y, message: m, label: cut(labelOf(m), room), from: a, to: b });
+    y += a === b ? 3 : 2;
+  };
+  for (const item of items) {
+    if (item.kind === "open") {
+      const frame2 = { title: item.section.name, par: false, depth: item.depth, top: y++, bottom: -1, dividers: [] };
+      frames.push(frame2);
+      open.push(frame2);
+    } else if (item.kind === "close") {
+      open.pop().bottom = y++;
+    } else if (item.item.kind === "message") message(item.item.message);
+    else {
+      const frame2 = { title: "par", par: true, depth: item.depth, top: y++, bottom: -1, dividers: [] };
+      frames.push(frame2);
+      item.item.branches.forEach((branch, i) => {
+        if (i > 0) frame2.dividers.push(y++);
+        branch.forEach(message);
+      });
+      frame2.bottom = y++;
+    }
+  }
+  return { columns: width, rows: y + 1, lifelines, frames, messages: rows, steps: scenario.steps };
+}
+function paintSequence(scene, options = {}) {
+  const grid = new Grid(scene.columns, scene.rows);
+  const { play } = options;
+  const current = play ? new Set(currentStepsOf(scene.steps, play.index)) : void 0;
+  const lookOf2 = (step) => !play ? void 0 : current.has(step) ? "lit" : scene.steps.indexOf(step) < play.index ? "past" : "future";
+  const lit = /* @__PURE__ */ new Set();
+  const failing = /* @__PURE__ */ new Set();
+  for (const step of current ?? []) {
+    lit.add(step.fromServiceId);
+    lit.add(step.toServiceId);
+    if (isErrorStep(step)) failing.add(step.toServiceId);
+  }
+  for (const l of scene.lifelines) for (let y = HEAD_ROWS; y < scene.rows; y++) grid.set(l.x, y, "\u2502", COLOR.fadedMore);
+  for (const f of scene.frames) drawFrame(grid, scene, f);
+  for (const row of scene.messages) drawMessage(grid, scene, row, lookOf2(row.message.step));
+  if (play) for (const step of current) drawPacket(grid, scene, step, play.progress);
+  for (const l of scene.lifelines) drawBox(grid, l, failing.has(l.id) ? COLOR.fail : lit.has(l.id) ? COLOR.pink : play ? COLOR.faded : void 0, options.icons ?? "nerd-font");
+  return grid;
+}
+function drawBox(grid, l, accent, icons2) {
+  const base = l.node ? nodeBaseColor(l.node) : void 0;
+  const color = accent ?? (base ? hex(base) : COLOR.line);
+  const x0 = l.x - Math.floor(l.w / 2);
+  const x1 = x0 + l.w - 1;
+  for (let x = x0 + 1; x < x1; x++) {
+    grid.set(x, 0, "\u2501", color);
+    grid.set(x, HEAD_ROWS - 1, x === l.x ? "\u2533" : "\u2501", color);
+    grid.set(x, 1, " ");
+    grid.set(x, 2, " ");
+  }
+  for (const [x, top, bottom] of [
+    [x0, "\u250F", "\u2517"],
+    [x1, "\u2513", "\u251B"]
+  ]) {
+    grid.set(x, 0, top, color);
+    grid.set(x, 1, "\u2503", color);
+    grid.set(x, 2, "\u2503", color);
+    grid.set(x, HEAD_ROWS - 1, bottom, color);
+  }
+  const icon = l.node ? iconOf(l.node, icons2) : void 0;
+  const room = l.w - 4;
+  const name = icon ? `${icon} ${cut(l.name, room - 2)}` : cut(l.name, room);
+  const centre = (text) => x0 + 2 + Math.max(0, Math.floor((room - [...text].length) / 2));
+  grid.text(centre(name), 1, name, DEFAULT);
+  if (l.tech) grid.text(centre(cut(l.tech, room)), 2, cut(l.tech, room), COLOR.muted);
+}
+function drawFrame(grid, scene, f) {
+  const x0 = f.depth;
+  const x1 = scene.columns - 1 - f.depth;
+  const color = f.par ? COLOR.muted : COLOR.line;
+  for (let x = x0 + 1; x < x1; x++) {
+    grid.set(x, f.top, "\u2500", color);
+    grid.set(x, f.bottom, "\u2500", color);
+    for (const d of f.dividers) grid.set(x, d, "\u254C", color);
+  }
+  grid.set(x0, f.top, "\u256D", color);
+  grid.set(x1, f.top, "\u256E", color);
+  grid.set(x0, f.bottom, "\u2570", color);
+  grid.set(x1, f.bottom, "\u256F", color);
+  for (let y = f.top + 1; y < f.bottom; y++) {
+    const divider = f.dividers.includes(y);
+    grid.set(x0, y, divider ? "\u251C" : "\u2502", color);
+    grid.set(x1, y, divider ? "\u2524" : "\u2502", color);
+  }
+  const title = ` ${cut(f.title, x1 - x0 - 5)} `;
+  grid.text(x0 + 2, f.top, title, f.par ? COLOR.muted : COLOR.note);
+}
+function pathOf(scene, row) {
+  const a = scene.lifelines[row.from].x;
+  if (row.from === row.to) return [a + 1, a + 2, a + 3].map((x) => ({ x, y: row.y + 1 })).concat([{ x: a + 3, y: row.y + 2 }, { x: a + 2, y: row.y + 2 }, { x: a + 1, y: row.y + 2 }]);
+  const b = scene.lifelines[row.to].x;
+  const step = b > a ? 1 : -1;
+  const cells = [];
+  for (let x = a + step; x !== b; x += step) cells.push({ x, y: row.y + 1 });
+  return cells;
+}
+function drawMessage(grid, scene, row, look) {
+  const m = row.message;
+  const color = look === "future" ? COLOR.fadedMore : m.error ? COLOR.fail : look === "lit" ? COLOR.pink : m.kind === "response" ? COLOR.muted : DEFAULT;
+  const heavy = look === "lit";
+  const body = m.kind === "response" ? heavy ? "\u2505" : "\u254C" : heavy ? "\u2501" : "\u2500";
+  const head = m.failed ? "\u2717" : m.async ? m.to === m.from ? "\u25C1" : "" : "";
+  const cells = pathOf(scene, row);
+  const a = scene.lifelines[row.from].x;
+  if (row.from === row.to) {
+    grid.text(a + 1, row.y + 1, `${body}${body}${heavy ? "\u2513" : "\u256E"}`, color);
+    grid.text(a + 1, row.y + 2, `${head || "\u25C4"}${body}${heavy ? "\u251B" : "\u256F"}`, color);
+  } else {
+    const right = scene.lifelines[row.to].x > a;
+    for (const c of cells) grid.set(c.x, c.y, body, color);
+    const last = cells[cells.length - 1];
+    if (last) grid.set(last.x, last.y, head || (m.async ? right ? "\u25B7" : "\u25C1" : right ? "\u25BA" : "\u25C4"), color);
+  }
+  const left = row.from === row.to ? a + 2 : Math.min(a, scene.lifelines[row.to].x) + 2;
+  if (m.kind === "request") {
+    const [number, ...rest] = row.label.split(" ");
+    const chip2 = look === "future" ? COLOR.fadedMore : m.error ? COLOR.fail : COLOR.pink;
+    grid.text(left, row.y, number, look === "lit" ? COLOR.onColor : chip2, Infinity, look === "lit" ? chip2 : void 0);
+    grid.text(left + number.length + 1, row.y, rest.join(" "), look === "future" ? COLOR.fadedMore : DEFAULT);
+  } else grid.text(left, row.y, row.label, look === "future" ? COLOR.fadedMore : m.error ? COLOR.fail : COLOR.muted);
+}
+function drawPacket(grid, scene, step, progress) {
+  if (progress >= 100) return;
+  const request2 = scene.messages.find((r) => r.message.step === step && r.message.kind === "request");
+  if (!request2) return;
+  const response2 = scene.messages.find((r) => r.message.step === step && r.message.kind === "response");
+  const failed = !!step.failed;
+  const roundTrip = !!response2 && !failed;
+  const [row, share] = failed ? [request2, Math.min(progress, FAIL_AT2) / 100] : roundTrip && progress > 50 ? [response2, (progress - 50) / 50] : [request2, roundTrip ? progress / 50 : progress / 100];
+  const cells = pathOf(scene, row);
+  if (cells.length === 0) return;
+  const at = cells[Math.max(0, Math.min(cells.length - 1, Math.round(share * (cells.length - 1))))];
+  const cutOff = failed && progress >= FAIL_AT2;
+  grid.set(at.x, at.y, cutOff ? "\u2717" : "\u25A0", row.message.error || cutOff ? COLOR.fail : COLOR.pink);
+}
+
 // ../frontend/src/playground/useCaseGroups.ts
 function groupByEndpoint(useCases) {
   if (!useCases.some((u) => u.endpoint)) return [{ useCases }];
@@ -6666,7 +6901,7 @@ var NO_SOURCE = { source: "" };
 var paneFile = atom({ plugin: "proschi", key: "paneFile" }, "");
 var paneSource = atom({ plugin: "proschi", key: "paneSource" }, NO_SOURCE);
 var players = atom({ plugin: "proschi", key: "player" }, IDLE);
-var PANE_KEYS = "p play \xB7 n/b step \xB7 r restart \xB7 e end \xB7 x explorer \xB7 d diagram \xB7 esc back to the prompt";
+var PANE_KEYS = "p play \xB7 n/b step \xB7 r restart \xB7 e end \xB7 v sequence/architecture \xB7 x explorer \xB7 d diagram \xB7 esc back to the prompt";
 var SYSTEM_KEYS = "s next system \xB7 o open/close \xB7 f focus in \xB7 u back out";
 var FRAME2 = 50;
 var HINT = [
@@ -6679,6 +6914,7 @@ var layouts = /* @__PURE__ */ new Map();
 var pending = /* @__PURE__ */ new Set();
 var documents = /* @__PURE__ */ new Map();
 var scenes = /* @__PURE__ */ new Map();
+var sequences = /* @__PURE__ */ new Map();
 var timers = /* @__PURE__ */ new Map();
 var FENCE = /^```proschi[^\n]*\n([\s\S]*?)\n```[ \t]*$/gm;
 function register(on, options) {
@@ -6868,7 +7104,8 @@ function normal(p) {
     explorer: p?.explorer === true,
     expanded: Array.isArray(p?.expanded) ? p.expanded.filter((id) => typeof id === "string") : [],
     ...typeof p?.focus === "string" ? { focus: p.focus } : {},
-    ...typeof p?.selected === "string" ? { selected: p.selected } : {}
+    ...typeof p?.selected === "string" ? { selected: p.selected } : {},
+    ...p?.view === "architecture" ? { view: "architecture" } : {}
   };
 }
 var PINK = "#ff5da2";
@@ -6915,15 +7152,36 @@ async function diagramView($, d, viewId, written, file) {
   const width = Math.min(Math.max(40, d.columns), Math.max(scene.columns, BARS_WIDTH));
   const systems = selectable(scene, player.focus);
   const selected = systems.find((s) => s.path === player.selected) ?? systems[0];
-  const view = { d, viewId, rasterKey: `d-${viewId}`, anchorKey: `at-${viewId}`, scene, width, overlay: doc.overlay, systems: doc.systems, ...selected ? { selected: selected.id } : {}, inPane: d.requestId === PANE };
+  const view = { d, viewId, rasterKey: `d-${viewId}`, anchorKey: `at-${viewId}`, scene, width, overlay: doc.overlay, systems: doc.systems, ...selected ? { selected: selected.id } : {}, inPane: d.requestId === PANE, doc, docKey: key, columns };
   if (playing && player.isPlaying && !timers.has(viewId)) animate($, view, steps);
   const progress = timers.has(viewId) ? 0 : 100;
-  const grid = paint(scene, { overlay: doc.overlay, icons, systems: doc.systems, ...view.selected ? { selected: view.selected } : {}, ...steps.length > 0 ? { play: playAt(scene, steps, step, progress) } : {} });
+  const { grid, rasterKey } = frameOf2(view, player, step, progress);
   const link = doc.link(playing ? { useCase: playing.useCase.id, ...playing.useCase.scenarios.length > 1 ? { scenario: playing.scenario.id } : {}, step } : void 0);
   const lost = lostImports(written, keyOf(written));
   const hasSystems = systems.length > 0 || player.focus !== void 0;
   const roomy = view.width >= 79;
-  return { element: /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, playing ? playerHeader($, view, playing, player) : doc.diagram.title && /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, /* @__PURE__ */ h(ui.Text, { bold: true }, doc.diagram.title), doc.diagram.summary && /* @__PURE__ */ h(ui.Text, { dimColor: true }, doc.diagram.summary)), /* @__PURE__ */ h(ui.Box, { key: view.anchorKey, flexDirection: "column" }, grid.columns > d.columns && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u2194 ", grid.columns, " columns wide, wider than the ", d.columns, " here: ", view.inPane ? "widen the window" : "use \u26F6 Focus or a wider window", " to see it whole."), lost.some((name) => !importReasons.has(name)) && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u26A0 Not found, so drawn as plain boxes: ", lost.filter((name) => !importReasons.has(name)).join(", ")), lost.filter((name) => importReasons.has(name)).map((name) => /* @__PURE__ */ h(ui.Text, { key: `lost-${name}`, dimColor: true }, "\u26A0 ", importReasons.get(name))), doc.notes.map((note) => /* @__PURE__ */ h(ui.Text, { color: "yellow" }, "\u26A0 ", note.text, note.hint && /* @__PURE__ */ h(ui.Text, { dimColor: true }, " \u2192 ", note.hint))), /* @__PURE__ */ h(ui.Raster, { key: view.rasterKey, columns: grid.columns, rows: grid.rows, cells: grid.toBase64() })), hasSystems && !playing && systemBar($, view, doc, systems, selected, player), playing ? stepPanel($, view, playing, step, player) : pick && useCaseBar($, view, doc, pick, player), /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, borderStyle: "round", borderColor: "gray", paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Button, { key: `src-${viewId}`, label: roomy ? "\u29C9 Copy source" : "\u29C9 Source", onPress: (press) => void copy($, press.surface, source.source, "the Proschi source") }), /* @__PURE__ */ h(ui.Button, { key: `lnk-${viewId}`, label: roomy ? "\u29C9 Copy share link" : "\u29C9 Link", onPress: (press) => void copy($, press.surface, link, "the share link") }), /* @__PURE__ */ h(ui.Button, { key: `open-${viewId}`, label: roomy ? "\u2197 Open in Proschi" : "\u2197 Open", variant: "primary", onPress: (press) => void openLink($, press.surface, link) }), !view.inPane && /* @__PURE__ */ h(ui.Button, { key: `focus-${viewId}`, label: "\u26F6 Focus", onPress: () => focus($, view, file ? basename(file) : doc.diagram.title ?? "diagram", file ? { file } : { source }) }))), systems: hasSystems };
+  return { element: /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, playing ? playerHeader($, view, playing, player) : doc.diagram.title && /* @__PURE__ */ h(ui.Box, { flexDirection: "column" }, /* @__PURE__ */ h(ui.Text, { bold: true }, doc.diagram.title), doc.diagram.summary && /* @__PURE__ */ h(ui.Text, { dimColor: true }, doc.diagram.summary)), /* @__PURE__ */ h(ui.Box, { key: view.anchorKey, flexDirection: "column" }, grid.columns > d.columns && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u2194 ", grid.columns, " columns wide, wider than the ", d.columns, " here: ", view.inPane ? "widen the window" : "use \u26F6 Focus or a wider window", " to see it whole."), lost.some((name) => !importReasons.has(name)) && /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\u26A0 Not found, so drawn as plain boxes: ", lost.filter((name) => !importReasons.has(name)).join(", ")), lost.filter((name) => importReasons.has(name)).map((name) => /* @__PURE__ */ h(ui.Text, { key: `lost-${name}`, dimColor: true }, "\u26A0 ", importReasons.get(name))), doc.notes.map((note) => /* @__PURE__ */ h(ui.Text, { color: "yellow" }, "\u26A0 ", note.text, note.hint && /* @__PURE__ */ h(ui.Text, { dimColor: true }, " \u2192 ", note.hint))), /* @__PURE__ */ h(ui.Raster, { key: rasterKey, columns: grid.columns, rows: grid.rows, cells: grid.toBase64() })), hasSystems && !playing && systemBar($, view, doc, systems, selected, player), playing ? stepPanel($, view, playing, step, player) : pick && useCaseBar($, view, doc, pick, player), /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, borderStyle: "round", borderColor: "gray", paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Button, { key: `src-${viewId}`, label: roomy ? "\u29C9 Copy source" : "\u29C9 Source", onPress: (press) => void copy($, press.surface, source.source, "the Proschi source") }), /* @__PURE__ */ h(ui.Button, { key: `lnk-${viewId}`, label: roomy ? "\u29C9 Copy share link" : "\u29C9 Link", onPress: (press) => void copy($, press.surface, link, "the share link") }), /* @__PURE__ */ h(ui.Button, { key: `open-${viewId}`, label: roomy ? "\u2197 Open in Proschi" : "\u2197 Open", variant: "primary", onPress: (press) => void openLink($, press.surface, link) }), !view.inPane && /* @__PURE__ */ h(ui.Button, { key: `focus-${viewId}`, label: "\u26F6 Focus", onPress: () => focus($, view, file ? basename(file) : doc.diagram.title ?? "diagram", file ? { file } : { source }) }))), systems: hasSystems };
+}
+function playedPick(doc, player) {
+  if (player.mode !== "play") return void 0;
+  const picks = doc.diagram.useCases.flatMap((u) => u.scenarios.map((s) => pickOf(u, s)));
+  return picks.find((p) => p.value === player.pick) ?? picks[0];
+}
+function frameOf2(view, player, step, progress, tick = 0) {
+  const pick = playedPick(view.doc, player);
+  const steps = pick?.scenario.steps ?? [];
+  const at = Math.max(0, Math.min(step, steps.length - 1));
+  if (pick && player.view !== "architecture") {
+    const key = `${view.docKey}#${pick.value}@${view.columns}`;
+    let sequence = sequences.get(key);
+    if (!sequence) {
+      sequence = buildSequenceScene(view.doc.diagram, pick.useCase, pick.scenario, view.columns);
+      sequences.set(key, sequence);
+    }
+    return { grid: paintSequence(sequence, { icons, ...steps.length > 0 ? { play: { index: at, progress } } : {} }), rasterKey: `q-${view.viewId}` };
+  }
+  const grid = paint(view.scene, { overlay: view.overlay, icons, systems: view.systems, ...view.selected ? { selected: view.selected } : {}, ...steps.length > 0 ? { play: playAt(view.scene, steps, at, progress, tick) } : {} });
+  return { grid, rasterKey: view.rasterKey };
 }
 function selectable(scene, focus2) {
   return [...scene.nodes.values()].map((n) => n.node).filter((n) => n.kind === "system" || n.kind === "group" && n.system === n.id).map((n) => ({ id: n.id, path: focus2 !== void 0 ? `${focus2}.${n.id}` : n.id, name: n.name, expanded: n.kind === "group" }));
@@ -6974,8 +7232,9 @@ function lostImports(source, key) {
   return names;
 }
 var EXPLORE = { long: ["\u2261 Explore use cases", "\u2261 Hide explorer"], short: ["\u2261 Explore", "\u2261 Hide"] };
+var VIEWS = ["\u25EB Architecture", "\u21C5 Sequence"];
 var toggle = (labels, open) => labels[open ? 1 : 0].padEnd(Math.max(...labels.map((l) => l.length)));
-var cut = (text, room) => text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}\u2026`;
+var cut2 = (text, room) => text.length <= room ? text : `${text.slice(0, Math.max(0, room - 1))}\u2026`;
 function useCaseBar($, view, doc, pick, player) {
   const { ui } = view.d;
   const groups = groupByEndpoint(doc.diagram.useCases);
@@ -6986,7 +7245,7 @@ function useCaseBar($, view, doc, pick, player) {
   const picker = 9 + Math.max(...labels.map((o) => o.label.length)) + 2;
   const oneRow = picker + 1 + 10 + 1 + longToggle <= inner;
   const explore = toggle(10 + 1 + longToggle <= inner ? EXPLORE.long : EXPLORE.short, player.explorer);
-  const options = oneRow ? labels : labels.map((o) => ({ ...o, label: cut(o.label, inner - 9 - 2) }));
+  const options = oneRow ? labels : labels.map((o) => ({ ...o, label: cut2(o.label, inner - 9 - 2) }));
   const select = /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, alignItems: "center" }, /* @__PURE__ */ h(ui.Text, { bold: true, color: PINK }, "Use case"), /* @__PURE__ */ h(
     ui.Select,
     {
@@ -7011,7 +7270,18 @@ function scenarioLabel(ui, u, s, current) {
 function playerHeader($, view, pick, player) {
   const { ui } = view.d;
   const { useCase } = pick;
-  return /* @__PURE__ */ h(ui.Box, { flexDirection: "column", borderStyle: "round", borderColor: PINK, paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, alignItems: "center" }, /* @__PURE__ */ h(ui.Button, { key: `back-${view.viewId}`, label: "\u2190 Diagram", ...hotkey(view, "d"), onPress: () => void setPlayer($, view, (p) => ({ ...p, mode: "diagram", isPlaying: false })) }), /* @__PURE__ */ h(ui.Text, { bold: true, wrap: "truncate-end" }, useCase.name), /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\xB7 Playback mode \xB7 read only")), useCase.scenarios.length > 1 && /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, flexWrap: "wrap" }, useCase.scenarios.map((s) => {
+  return /* @__PURE__ */ h(ui.Box, { flexDirection: "column", borderStyle: "round", borderColor: PINK, paddingX: 1, width: view.width }, /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, alignItems: "center" }, /* @__PURE__ */ h(ui.Button, { key: `back-${view.viewId}`, label: "\u2190 Diagram", ...hotkey(view, "d"), onPress: () => void setPlayer($, view, (p) => ({ ...p, mode: "diagram", isPlaying: false })) }), /* @__PURE__ */ h(ui.Text, { bold: true, wrap: "truncate-end" }, useCase.name), /* @__PURE__ */ h(ui.Text, { dimColor: true, wrap: "truncate-end" }, "\xB7 Playback mode \xB7 read only"), /* @__PURE__ */ h(
+    ui.Button,
+    {
+      key: `view-${view.viewId}`,
+      label: toggle(VIEWS, player.view === "architecture"),
+      ...hotkey(view, "v"),
+      onPress: () => {
+        reveal($, view);
+        void setPlayer($, view, (p) => ({ ...p, view: p.view === "architecture" ? void 0 : "architecture" }), player.isPlaying ? pick.scenario.steps : void 0);
+      }
+    }
+  )), useCase.scenarios.length > 1 && /* @__PURE__ */ h(ui.Box, { flexDirection: "row", gap: 1, flexWrap: "wrap" }, useCase.scenarios.map((s) => {
     const current = s.id === pick.scenario.id;
     return /* @__PURE__ */ h(ui.Button, { key: `sc-${view.viewId}-${s.id}`, variant: current ? "primary" : void 0, dimColor: !current, onPress: () => start($, view, pickOf(useCase, s), player.isPlaying) }, scenarioLabel(ui, useCase, s, current));
   })));
@@ -7159,8 +7429,8 @@ function animate($, view, steps) {
     const now = await $.clock.now();
     if (started < 0) started = now;
     const elapsed = now - started;
-    const play = playAt(view.scene, steps, step, Math.min(100, elapsed / TRAVEL_MS * 100), tick++);
-    await $.ui.blit({ requestId: view.d.requestId, key: view.rasterKey, cells: paint(view.scene, { overlay: view.overlay, icons, systems: view.systems, ...view.selected ? { selected: view.selected } : {}, play }).toBase64() });
+    const { grid, rasterKey } = frameOf2(view, player, step, Math.min(100, elapsed / TRAVEL_MS * 100), tick++);
+    await $.ui.blit({ requestId: view.d.requestId, key: rasterKey, cells: grid.toBase64() });
     if (!player.isPlaying) {
       if (elapsed >= TRAVEL_MS) stop(view.viewId);
       return;
