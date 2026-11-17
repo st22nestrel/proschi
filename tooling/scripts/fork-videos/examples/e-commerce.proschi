@@ -1,0 +1,136 @@
+title "E-Commerce Platform"
+
+group vpc "AWS VPC" {
+  gateway   "API Gateway"         [AWS API Gateway] @Platform
+  orders    "Order Service"       [REST API]        @Orders   "Handles order processing"
+  users     "User Service"        [GraphQL]         @Platform
+  payments  "Payment Service"     [REST API]        @Orders   "Charges and refunds"
+  inventory "Inventory Service"   [REST API]        @Orders   "Stock levels and reservations"
+  notifier  "Notification Worker" [Service]         @Platform "Sends e-mails from events"
+}
+ordersDb "Orders DB"    [PostgreSQL] @Orders
+usersDb  "Users DB"     [PostgreSQL] @Platform
+stockDb  "Inventory DB" [PostgreSQL] @Orders
+cache    "Order cache"  [Redis]      @Orders
+events   "OrderEvents"  [Kafka]      @Platform
+
+gateway   -> orders    : HTTP
+gateway   -> users     : GraphQL
+orders    -> users     : GraphQL
+orders    -> ordersDb  : SQL
+orders    -> cache     : RESP
+orders    -> inventory : HTTP
+orders    -> payments  : HTTP
+inventory -> stockDb   : SQL
+users     -> usersDb   : SQL
+orders    -> events    : Publish
+events    -> notifier  : Consume
+
+usecase "Create order" "Complete flow for creating a new order" {
+  section "Validate" {
+    gateway -> orders : POST /api/orders json {
+      "userId": "user123",
+      "items": [{ "productId": "prod-1", "quantity": 2 }]
+    }
+    orders -> users : GET /api/users/user123
+  }
+
+  alt "Created" {
+    users --> orders : 200 {"verified": true}
+    section "Reserve and pay" {
+      orders -> inventory : POST /api/stock/reservations {"productId": "prod-1", "quantity": 2}
+      inventory -> stockDb : UPDATE stock
+      inventory --> orders : 201 {"reservationId": "res-1"}
+      orders -> payments : POST /api/charges {"userId": "user123", "amount": 4900}
+      payments --> orders : 201 {"chargeId": "ch-1"}
+    }
+    section "Persist and announce" {
+      par {
+        orders  -> ordersDb : INSERT order
+        orders ->> events   : PUBLISH OrderCreated {"orderId": "order-789"}
+      }
+      orders --> gateway : 201 {"orderId": "order-789", "status": "pending"}
+    }
+  } alt "Unknown user" {
+    users  --> orders  : 404
+    orders --> gateway : 422 {"error": "unknown_user"}
+  } alt "Out of stock" {
+    users --> orders : 200 {"verified": true}
+    orders -> inventory : POST /api/stock/reservations {"productId": "prod-1", "quantity": 2}
+    inventory -> stockDb : UPDATE stock
+    inventory --> orders : 409 {"error": "out_of_stock"}
+    orders --> gateway : 409 {"error": "out_of_stock"}
+  } alt "Payment declined" {
+    users --> orders : 200 {"verified": true}
+    orders -> inventory : POST /api/stock/reservations {"productId": "prod-1", "quantity": 2}
+    inventory -> stockDb : UPDATE stock
+    inventory --> orders : 201 {"reservationId": "res-1"}
+    orders -> payments : POST /api/charges {"userId": "user123", "amount": 4900}
+    payments --> orders : 402 {"error": "card_declined"}
+    orders -> inventory : DELETE /api/stock/reservations/res-1
+    inventory -> stockDb : UPDATE stock
+    inventory --> orders : 204
+    orders --> gateway : 402 {"error": "payment_declined"}
+  } alt "Database down" {
+    users  --> orders   : 200 {"verified": true}
+    orders  -x ordersDb : INSERT order # -x: the call never gets an answer
+    orders --> gateway  : 503 {"error": "try_again_later"}
+  }
+}
+
+usecase "Get order" {
+  gateway -> orders : GET /api/orders/order-789
+  section "Lookup" {
+    orders -> cache : GET order:order-789
+    alt "Cache hit" {
+      cache --> orders : 200
+      orders --> gateway : 200 {"orderId": "order-789", "status": "pending"}
+    } alt "Cache miss" {
+      cache --> orders : 404
+      orders -> ordersDb : SELECT order
+      ordersDb --> orders : 200
+      orders -> cache : SET order:order-789
+      orders --> gateway : 200 {"orderId": "order-789", "status": "pending"}
+    } alt "Not found" {
+      cache --> orders : 404
+      orders -> ordersDb : SELECT order
+      ordersDb --> orders : 404
+      orders --> gateway : 404 {"error": "not_found"}
+    }
+  }
+}
+
+usecase "Cancel order" "Customer cancels a pending order and is refunded" {
+  gateway -> orders : DELETE /api/orders/order-789
+  orders -> ordersDb : SELECT order
+
+  alt "Cancelled" {
+    ordersDb --> orders : 200 {"status": "pending"}
+    section "Compensate" {
+      orders -> payments : POST /api/refunds {"chargeId": "ch-1"}
+      payments --> orders : 201
+      orders -> inventory : DELETE /api/stock/reservations/res-1
+      inventory -> stockDb : UPDATE stock
+      inventory --> orders : 204
+    }
+    section "Persist and announce" {
+      par {
+        orders -> ordersDb : UPDATE order SET status = cancelled
+        orders ->> events  : PUBLISH OrderCancelled {"orderId": "order-789"}
+      }
+      orders --> gateway : 200 {"status": "cancelled"}
+    }
+  } alt "Already shipped" {
+    ordersDb --> orders : 200 {"status": "shipped"}
+    orders --> gateway : 409 {"error": "already_shipped"}
+  } alt "Not found" {
+    ordersDb --> orders : 404
+    orders --> gateway : 404 {"error": "not_found"}
+  }
+}
+
+usecase "Order confirmation e-mail" "Async: the worker reacts to OrderCreated" {
+  events -> notifier : CONSUME OrderCreated {"orderId": "order-789"}
+  notifier -> users : GET /api/users/user123
+  users --> notifier : 200 {"email": "user@example.com"}
+}
