@@ -1,7 +1,8 @@
-// Ghostty on the recorded display, running a command through ptyrelay.py so
-// the clip can type into it and wait for what it prints.
+// A terminal (Ghostty or GNOME Terminal) on the recorded display, running a
+// command through ptyrelay.py so the clip can type into it and wait for what
+// it prints.
 import { execFileSync, spawn } from 'node:child_process';
-import { closeSync, openSync, readFileSync, rmSync, statSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { HERE, sleep } from './env.mjs';
 
@@ -23,33 +24,72 @@ export async function maximize(screen, timeout = 15_000) {
 }
 
 /**
- * Opens a maximised, undecorated Ghostty that runs `command` in `cwd`.
- * Returns `{ send, type, waitFor, waitQuiet, close }`.
+ * A session bus that offers only GNOME Terminal's server. On the full one its
+ * server waits on the desktop portal, which waits on the keyring, and no window
+ * shows up on a bare X display.
  */
-export async function openTerminal(screen, { cwd, command, args = [], fontSize = 13, workDir, env }) {
+function terminalBus(workDir) {
+  const services = join(workDir, 'dbus-services');
+  mkdirSync(services, { recursive: true });
+  writeFileSync(join(services, 'org.gnome.Terminal.service'), '[D-BUS Service]\nName=org.gnome.Terminal\nExec=/usr/libexec/gnome-terminal-server\n');
+  const config = join(workDir, 'dbus-session.conf');
+  writeFileSync(
+    config,
+    `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <servicedir>${services}</servicedir>
+  <policy context="default"><allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/></policy>
+</busconfig>
+`,
+  );
+  return config;
+}
+
+/**
+ * Opens a maximised terminal that runs `command` in `cwd`: `ghostty`
+ * (undecorated) or `gnome-terminal` (Ubuntu's, with its default profile and
+ * header bar). Returns `{ send, type, key, waitFor, waitQuiet, mark, text, close }`.
+ */
+export async function openTerminal(screen, { app = 'ghostty', cwd, command, args = [], fontSize = 13, zoom = 1, workDir, env }) {
   const keys = join(workDir, 'keys.fifo');
   const log = join(workDir, 'terminal.log');
   rmSync(keys, { force: true });
   rmSync(log, { force: true });
   execFileSync('mkfifo', [keys]);
-  const ghostty = spawn(
-    'ghostty',
-    [
-      '--gtk-single-instance=false',
-      '--config-default-files=false',
-      '--window-decoration=none',
-      '--maximize=true',
-      `--font-size=${fontSize}`,
-      '--confirm-close-surface=false',
-      '--quit-after-last-window-closed=true',
-      '--cursor-style-blink=false',
-      '-e', 'python3', join(HERE, 'lib/ptyrelay.py'), keys, log, command, ...args,
-    ],
-    { cwd, env: env ?? screen.env, stdio: 'ignore', detached: true },
-  );
+  const relay = ['python3', join(HERE, 'lib/ptyrelay.py'), keys, log, command, ...args];
+  const childEnv = { ...(env ?? screen.env) };
+  // Say nothing about the terminal this script runs in; the new one sets its own.
+  for (const k of ['TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'GHOSTTY_RESOURCES_DIR', 'GHOSTTY_BIN_DIR', 'GHOSTTY_SHELL_FEATURES', 'KITTY_WINDOW_ID', 'VTE_VERSION', 'COLORTERM']) delete childEnv[k];
+  const proc =
+    app === 'gnome-terminal'
+      ? spawn(
+          'dbus-run-session',
+          ['--config-file', terminalBus(workDir), '--', 'gnome-terminal', '--wait', '--maximize', '--hide-menubar', `--zoom=${zoom}`, `--working-directory=${cwd}`, '--', ...relay],
+          // No dconf: the stock profile, not yours.
+          { cwd, env: { ...childEnv, GSETTINGS_BACKEND: 'memory', NO_AT_BRIDGE: '1' }, stdio: ['ignore', 'ignore', openSync(join(workDir, 'gnome-terminal.log'), 'w')], detached: true },
+        )
+      : spawn(
+          'ghostty',
+          [
+            '--gtk-single-instance=false',
+            '--config-default-files=false',
+            '--window-decoration=none',
+            '--maximize=true',
+            `--font-size=${fontSize}`,
+            '--confirm-close-surface=false',
+            '--quit-after-last-window-closed=true',
+            '--cursor-style-blink=false',
+            '-e', ...relay,
+          ],
+          { cwd, env: childEnv, stdio: 'ignore', detached: true },
+        );
   let exited = false;
-  ghostty.once('exit', () => (exited = true));
+  proc.once('exit', () => (exited = true));
   await maximize(screen);
+  if (app === 'gnome-terminal') await sleep(1000); // the pty takes the maximised size a moment later
 
   const text = () => {
     try {
@@ -124,7 +164,7 @@ export async function openTerminal(screen, { cwd, command, args = [], fontSize =
         /* closed */
       }
       try {
-        process.kill(-ghostty.pid, 'SIGTERM');
+        process.kill(-proc.pid, 'SIGTERM');
       } catch {
         /* gone */
       }

@@ -1,6 +1,7 @@
 // The VS Code extension: section highlighting in the editor, and the preview
 // with use case descriptions, section frames and the proschi.preview.theme
 // setting, following VS Code's light or dark colour theme.
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { maximize } from '../lib/terminal.mjs';
@@ -31,6 +32,14 @@ const SETTINGS = {
   'editor.minimap.enabled': false,
   'editor.fontSize': 13,
   'editor.cursorBlinking': 'solid',
+  // proschi.json is typed key by key in the clip: no closing quotes, indents or suggestions added.
+  'editor.autoClosingBrackets': 'never',
+  'editor.autoClosingQuotes': 'never',
+  'editor.autoIndent': 'none',
+  'editor.autoSurround': 'never',
+  'editor.quickSuggestions': { other: false, comments: false, strings: false },
+  'editor.suggestOnTriggerCharacters': false,
+  'editor.formatOnType': false,
   'security.workspace.trust.enabled': false,
   'update.mode': 'none',
   'extensions.autoCheckUpdates': false,
@@ -40,7 +49,30 @@ const SETTINGS = {
   'proschi.preview.theme': 'sketch-light',
 };
 
+/**
+ * How many more inotify instances this user may open (up to 64). VS Code's
+ * file watchers need a few dozen; without them it never sees proschi.json saved.
+ */
+function freeInotifyInstances() {
+  const probe = `import ctypes
+libc = ctypes.CDLL(None, use_errno=True)
+fds = []
+while len(fds) < 64:
+    fd = libc.inotify_init()
+    if fd < 0:
+        break
+    fds.append(fd)
+print(len(fds))`;
+  return Number(execFileSync('python3', ['-c', probe], { encoding: 'utf8' }).trim());
+}
+
 export async function record({ screen, rec, diagram, work }) {
+  const free = freeInotifyInstances();
+  if (free < 32) {
+    throw new Error(
+      `Only ${free} inotify instances are free for your user, so VS Code can't watch proschi.json. Close some editors or agents, or raise the limit: sudo sysctl fs.inotify.max_user_instances=512`,
+    );
+  }
   const userData = join(work, 'user-data');
   const settingsFile = join(userData, 'User/settings.json');
   mkdirSync(join(userData, 'User'), { recursive: true });
@@ -49,6 +81,8 @@ export async function record({ screen, rec, diagram, work }) {
   mkdirSync(folder, { recursive: true });
   const file = join(folder, 'e-commerce.proschi');
   writeFileSync(file, readFileSync(diagram, 'utf8'));
+  // Empty until the clip types a theme into it.
+  writeFileSync(join(folder, 'proschi.json'), '{}\n');
 
   const port = await freePort();
   const code = startProcess(
@@ -175,7 +209,36 @@ export async function record({ screen, rec, diagram, work }) {
     await scrollPreview(700);
     await sleep(3000);
 
+    /** Replaces proschi.json's text with `theme`, typed; saves it only when asked. */
+    const typeConfig = async (theme) => {
+      await page.keyboard.press('Control+A');
+      await sleep(300);
+      await page.keyboard.press('Delete');
+      await page.keyboard.type(`{\n  "theme": "${theme}"\n}\n`, { delay: 55 });
+    };
+    rec.caption('A `"theme"` in the folder\'s proschi.json overrides the setting');
+    await page.keyboard.press('Control+1'); // the .proschi file's editor group, not the preview's
+    await sleep(400);
+    await page.keyboard.press('Control+P');
+    await page.waitForSelector('.quick-input-widget input', { state: 'visible' });
+    await page.keyboard.type('proschi.json', { delay: 50 });
+    await sleep(900);
+    await page.keyboard.press('Enter');
     await sleep(1500);
+    await typeConfig('classic');
+    rec.caption('Not saved yet, so the preview stays as it was');
+    await sleep(3000);
+    rec.caption('Saved: the preview switches to the folder\'s theme');
+    await page.keyboard.press('Control+S');
+    await sleep(4000);
+    await scrollPreview(-500);
+    await sleep(2500);
+
+    rec.caption('Change it and save again: `sketch-light`');
+    await typeConfig('sketch-light');
+    await sleep(1200);
+    await page.keyboard.press('Control+S');
+    await sleep(4500);
     await rec.stop();
   } finally {
     await browser?.close().catch(() => {});

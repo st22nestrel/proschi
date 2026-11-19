@@ -18,9 +18,10 @@ node tooling/scripts/fork-videos/record.mjs --list
 | 01 | `themes` | `proschi render --theme sketch-light / sketch-dark / classic` as the `preview-html` page (architecture, scenario picker) and as the `hld-html` document |
 | 02 | `sections` | `section "Name" { … }` in use cases: the source next to the sequence SVG, one titled frame per section (and `par`) |
 | 03 | `preview-server` | `proschi preview --root <dir>`: the file list and its filter, a file's page, the file dropdown, previous/next, and an edit showing up on reload |
-| 04 | `vscode` | The VS Code extension: `section` highlighting, the preview with descriptions and section frames, the `proschi.preview.theme` setting (classic, then sketch-dark under a dark VS Code theme) |
+| 04 | `vscode` | The VS Code extension: `section` highlighting, the preview with descriptions and section frames, the `proschi.preview.theme` setting (classic, then sketch-dark under a dark VS Code theme), and a `"theme"` in `proschi.json` overriding it once the file is saved |
 | 05 | `claude-plugin` | The Claude Code plugin in Ghostty: `/proschi view`, the ⇅ Sequence switch (`v`), playing a scenario in it, back to the architecture at the same step, ↓ Inline (`i`) |
-| 06 | `web-sequence` | The web app's editor: use case playback switched between the architecture and the sequence view, the shared zoom controls, other scenarios and use cases, the dark theme |
+| 06 | `claude-plugin-text` | The same steps in Ubuntu's GNOME Terminal, which shows no pictures: the plugin draws the diagrams in text cells (with its `icons: symbols` setting, as the stock font has no Nerd Font glyphs) |
+| 07 | `web-sequence` | The web app's editor: use case playback switched between the architecture and the sequence view, the shared zoom controls, other scenarios and use cases, the dark theme |
 
 The diagram is [`examples/e-commerce.proschi`](examples/e-commerce.proschi):
 sections inside alt branches, a section that wraps alt branches, and `par`
@@ -43,7 +44,9 @@ blocks inside sections. Show another one with `--diagram <file>` (or
 - VS Code (`/usr/share/code/code`; `FORK_VIDEOS_VSCODE=<path>` elsewhere) for
   `vscode`. It runs with a throwaway profile and loads the extension from
   `tooling/vscode` as a development extension, so your own setup isn't used
-  or changed.
+  or changed. VS Code's file watchers need free inotify instances; the clip
+  stops with a message when fewer than 32 are free (raise the limit with
+  `sudo sysctl fs.inotify.max_user_instances=512`).
 - Ghostty and a logged-in `claude` for `claude-plugin`. It starts
   `claude --setting-sources local --plugin-dir plugin` in a scratch folder,
   so your installed plugins, hooks and user settings stay out, and
@@ -51,6 +54,12 @@ blocks inside sections. Show another one with `--diagram <file>` (or
   pane half the screen. `/proschi view` is handled by the plugin, so no prompt
   reaches the model. The first run accepts the folder trust prompt for
   `$TMPDIR/proschi-fork-videos/claude-plugin/project`.
+- GNOME Terminal for `claude-plugin-text`. It runs on its own D-Bus session
+  that offers only the terminal's server (on the full one it waits on the
+  desktop portal and never opens a window) and with in-memory settings, so it
+  uses the stock Ubuntu profile, not yours. Plugin options for both plugin
+  clips go in through `--settings`, the only place Claude Code reads them from
+  besides user and managed settings.
 
 A clip whose tools are missing is skipped with a message.
 
@@ -77,7 +86,8 @@ A clip whose tools are missing is skipped with a message.
   Playwright on that display.
 - `vscode` starts VS Code with `--remote-debugging-port` and drives the
   workbench over CDP with Playwright.
-- `claude-plugin` (`lib/terminal.mjs`) runs Ghostty, whose command is
+- `claude-plugin` and `claude-plugin-text` (`lib/terminal.mjs`) run Ghostty
+  or GNOME Terminal, whose command is
   `lib/ptyrelay.py`: it runs `claude` in a pty, copies its output to a log the
   clip waits on, and passes keys the clip writes to a FIFO, as if typed.
 

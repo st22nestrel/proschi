@@ -10,24 +10,37 @@ import { join } from 'node:path';
 import { openTerminal } from '../lib/terminal.mjs';
 import { PLUGIN, sleep, withoutClaudeSession } from '../lib/env.mjs';
 
-export const title = 'Claude Code plugin: sequence view and the inline switch';
+export const title = 'Claude Code plugin in Ghostty: sequence view and the inline switch';
 export const needs = ['ghostty', 'claude', 'python3', 'wmctrl'];
 export const size = [1920, 1080];
 
-/** ctrl+x as the kitty keyboard protocol sends it (Claude Code turns the protocol on), then tab: focus the pane. */
-const FOCUS_PANE = ['\x1b[120;5u', '\t'];
+export const record = (ctx) =>
+  recordPlugin(ctx, {
+    terminal: { app: 'ghostty', fontSize: 12 },
+    intro: "Claude Code with the fork's plugin, in Ghostty (pictures)",
+    // ctrl+x as the kitty keyboard protocol sends it (Claude Code turns the protocol on there).
+    ctrlX: '\x1b[120;5u',
+  });
 
-export async function record({ screen, rec, diagram, work }) {
+/**
+ * The plugin's steps in any terminal. `terminal` goes to openTerminal; `ctrlX`
+ * is how that terminal sends ctrl+x; `options` are the plugin's userConfig.
+ */
+export async function recordPlugin({ screen, rec, diagram, work }, { terminal, intro, ctrlX, options }) {
+  const FOCUS_PANE = [ctrlX, '\t'];
   const folder = join(work, 'project');
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, 'e-commerce.proschi'), readFileSync(diagram, 'utf8'));
+  // Plugin options are read from user, --settings or managed settings only; a --plugin-dir plugin is `proschi@inline`.
+  const settings = join(work, 'settings.json');
+  writeFileSync(settings, JSON.stringify({ pluginConfigs: { 'proschi@inline': { options: options ?? {} } } }, null, 2));
 
   const term = await openTerminal(screen, {
     cwd: folder,
     workDir: work,
-    fontSize: 12,
+    ...terminal,
     command: 'claude',
-    args: ['--setting-sources', 'local', '--plugin-dir', PLUGIN],
+    args: ['--setting-sources', 'local', '--settings', settings, '--plugin-dir', PLUGIN],
     // The fullscreen renderer gives the pane its own half of the screen.
     env: { ...withoutClaudeSession(screen.env), CLAUDE_CODE_NO_FLICKER: '1' },
   });
@@ -49,7 +62,7 @@ export async function record({ screen, rec, diagram, work }) {
     await term.waitQuiet(2000);
 
     rec.start();
-    rec.caption('Claude Code with the fork\'s plugin, in Ghostty (pictures)');
+    rec.caption(intro);
     await sleep(1500);
     await term.type('/proschi view e-commerce.proschi', 55);
     await sleep(600);

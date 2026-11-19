@@ -24,7 +24,7 @@ import { parseArgs } from 'node:util';
 import { onDisplay, startRecording } from './lib/display.mjs';
 import { assertBuilt, freshDir, has, HERE, TOOLING } from './lib/env.mjs';
 
-const CLIPS = ['themes', 'sections', 'preview-server', 'vscode', 'claude-plugin', 'web-sequence'];
+const CLIPS = ['themes', 'sections', 'preview-server', 'vscode', 'claude-plugin', 'claude-plugin-text', 'web-sequence'];
 const BASE_NEEDS = ['Xvfb', 'openbox', 'ffmpeg'];
 
 const { values: opts, positionals } = parseArgs({
